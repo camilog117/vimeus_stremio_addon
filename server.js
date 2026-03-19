@@ -46,7 +46,7 @@ const HEADERS = {
 //  CACHE  (TTL: 2 horas)
 // ─────────────────────────────────────────────
 const cache     = new Map();
-const CACHE_TTL = 2 * 60 * 60 * 1000;
+const CACHE_TTL = 0; // Sin cache — token fresco en cada request
 
 function cacheGet(key) {
   const e = cache.get(key);
@@ -204,7 +204,7 @@ app.get('/proxy/master', async (req, res) => {
   const realUrl = Buffer.from(req.query.url, 'base64').toString('utf8');
   console.log(`  [proxy/master] ${realUrl.slice(0, 80)}...`);
   try {
-    const r = await axios.get(realUrl, { headers: getHeaders(realUrl), timeout: 15000 });
+    const r = await axios.get(realUrl, { headers: getHeaders(realUrl), timeout: 30000 });
     let content  = r.data;
     const base   = realUrl.substring(0, realUrl.lastIndexOf('/') + 1);
 
