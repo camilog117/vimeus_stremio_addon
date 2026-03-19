@@ -1,16 +1,18 @@
-const express = require('express');
-const axios   = require('axios');
+const express    = require('express');
+const axios      = require('axios');
+const puppeteer  = require('puppeteer-core');
 
 const app = express();
 
 // ─────────────────────────────────────────────
 //  CONFIG
 // ─────────────────────────────────────────────
-const VIEW_KEY = 'Q8d7fhJ1D5MR1yjlmdTUGINn2slht2x2OtMweKxqPP4';
-const BASE     = 'https://vimeus.com';
-const PORT     = process.env.PORT || 7001;
-const HOST     = process.env.HOST || `http://localhost:${PORT}`;
-const TMDB_KEY = process.env.TMDB_KEY || 'c38f916ce25f02182165b028993509d4';
+const VIEW_KEY        = 'Q8d7fhJ1D5MR1yjlmdTUGINn2slht2x2OtMweKxqPP4';
+const BASE            = 'https://vimeus.com';
+const PORT            = process.env.PORT || 7001;
+const HOST            = process.env.HOST || `http://localhost:${PORT}`;
+const TMDB_KEY        = process.env.TMDB_KEY || 'c38f916ce25f02182165b028993509d4';
+const BROWSERLESS_KEY = process.env.BROWSERLESS_KEY || '2UBBQ73kcdGF6IV230e231c2508133ce41982112d9c6f001d';
 
 const HEADERS = {
   'User-Agent'     : 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
@@ -23,11 +25,12 @@ const HEADERS = {
 function getHeaders(url) {
   if (url.includes('goodstream.one')) return { ...HEADERS };
   if (url.includes('hlswish.com'))    return { ...HEADERS, 'Referer': 'https://hlswish.com/', 'Origin': 'https://hlswish.com' };
+  if (url.includes('vimeos'))         return { ...HEADERS, 'Referer': 'https://vimeos.net/', 'Origin': 'https://vimeos.net' };
   return HEADERS;
 }
 
 // ─────────────────────────────────────────────
-//  CACHE  (10 minutos)
+//  CACHE
 // ─────────────────────────────────────────────
 const cache     = new Map();
 const CACHE_TTL = 10 * 60 * 1000;
@@ -41,7 +44,7 @@ function cacheGet(key) {
 function cacheSet(key, data) { cache.set(key, { data, ts: Date.now() }); }
 
 // ─────────────────────────────────────────────
-//  TMDB — convertir IMDb a TMDB
+//  TMDB
 // ─────────────────────────────────────────────
 const imdbCache = new Map();
 
@@ -53,10 +56,7 @@ async function imdbToTmdb(imdbId, type) {
     const { data } = await axios.get(url, { timeout: 10000 });
     const result = type === 'movie' ? data.movie_results?.[0] : data.tv_results?.[0];
     const tmdbId = result?.id?.toString() || null;
-    if (tmdbId) {
-      imdbCache.set(key, tmdbId);
-      console.log(`  [tmdb] ${imdbId} → ${tmdbId}`);
-    }
+    if (tmdbId) { imdbCache.set(key, tmdbId); console.log(`  [tmdb] ${imdbId} → ${tmdbId}`); }
     return tmdbId;
   } catch (err) {
     console.log(`  [tmdb] Error: ${err.message}`);
@@ -81,26 +81,69 @@ async function getEmbeds(embedUrl) {
 }
 
 // ─────────────────────────────────────────────
-//  GOODSTREAM — extraer m3u8
+//  GOODSTREAM — extraer m3u8 con axios
 // ─────────────────────────────────────────────
 async function extractFromGoodstream(embedUrl) {
   console.log(`  [goodstream] ${embedUrl}`);
-  const { data: html } = await axios.get(embedUrl, {
-    headers: HEADERS,
-    timeout: 30000,
-  });
+  const { data: html } = await axios.get(embedUrl, { headers: HEADERS, timeout: 30000 });
   const m3u8 = html.match(/https:\/\/[^"'\s]+\.m3u8[^"'\s]*/);
-  if (m3u8) {
-    console.log(`  [goodstream] ✅ ${m3u8[0].slice(0, 80)}...`);
-    return m3u8[0];
-  }
+  if (m3u8) { console.log(`  [goodstream] ✅`); return m3u8[0]; }
   return null;
+}
+
+// ─────────────────────────────────────────────
+//  VIMEOS — extraer m3u8 con Browserless (Chrome real)
+// ─────────────────────────────────────────────
+async function extractFromVimeos(embedUrl) {
+  console.log(`  [vimeos/browserless] ${embedUrl}`);
+  let browser;
+  try {
+    browser = await puppeteer.connect({
+      browserWSEndpoint: `wss://production-sfo.browserless.io?token=${BROWSERLESS_KEY}`,
+    });
+
+    const page = await browser.newPage();
+    let m3u8   = null;
+
+    // Interceptar requests para capturar el m3u8
+    await page.setRequestInterception(true);
+    page.on('request', req => {
+      const url = req.url();
+      if (!m3u8 && url.includes('.m3u8')) {
+        m3u8 = url;
+        console.log(`  [vimeos/browserless] ✅ ${url.slice(0, 80)}...`);
+      }
+      req.continue();
+    });
+
+    await page.setExtraHTTPHeaders({
+      'Referer': 'https://vimeus.com/',
+      'Origin' : 'https://vimeus.com',
+    });
+
+    await page.goto(embedUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+
+    // Esperar hasta 15s al m3u8
+    const deadline = Date.now() + 15000;
+    while (!m3u8 && Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 500));
+    }
+
+    await page.close();
+    return m3u8;
+  } catch (err) {
+    console.error(`  [vimeos/browserless] Error: ${err.message}`);
+    return null;
+  } finally {
+    if (browser) await browser.disconnect();
+  }
 }
 
 // ─────────────────────────────────────────────
 //  ORQUESTADOR
 // ─────────────────────────────────────────────
-const SOURCE_PRIORITY = ['goodstream.one', 'hlswish.com', 'voe.sx', 'filemoon.sx', 'vimeos.net', 'vimeos.zip', 'vimeos.tv'];
+const SOURCE_PRIORITY = ['goodstream.one', 'vimeos.net', 'vimeos.zip', 'vimeos.tv', 'hlswish.com', 'voe.sx', 'filemoon.sx'];
+const VIMEOS_DOMAINS  = ['vimeos.net', 'vimeos.zip', 'vimeos.tv'];
 
 async function getM3U8FromEmbeds(embeds) {
   const sorted = [...embeds].sort((a, b) => {
@@ -112,12 +155,20 @@ async function getM3U8FromEmbeds(embeds) {
   const results = [];
   for (const embed of sorted) {
     try {
-      let m3u8 = null;
-      if (embed.url.includes('goodstream.one')) m3u8 = await extractFromGoodstream(embed.url);
-      if (m3u8) {
-        results.push({ m3u8, lang: embed.lang, quality: embed.quality, source: 'goodstream' });
+      const hostname = new URL(embed.url).hostname;
+      const isVimeos = VIMEOS_DOMAINS.some(d => embed.url.includes(d));
+
+      if (embed.url.includes('goodstream.one')) {
+        // Goodstream — resolver inmediatamente con axios
+        const m3u8 = await extractFromGoodstream(embed.url);
+        if (m3u8) {
+          results.push({ m3u8, lang: embed.lang, quality: embed.quality, source: 'goodstream', embedUrl: embed.url });
+        }
+      } else if (isVimeos) {
+        // Vimeos — agregar como fuente separada que se resuelve con Browserless al elegirla
+        results.push({ vimeosEmbed: embed.url, lang: embed.lang, quality: embed.quality, source: hostname });
       } else {
-        const hostname = new URL(embed.url).hostname;
+        // Otras fuentes — externalUrl
         results.push({ externalUrl: embed.url, lang: embed.lang, quality: embed.quality, source: hostname });
       }
     } catch (err) {
@@ -131,19 +182,14 @@ async function getM3U8FromEmbeds(embeds) {
 //  BUILD EMBED URL
 // ─────────────────────────────────────────────
 function buildEmbedUrl(type, id) {
-  const parts   = id.split(':');
+  const parts = id.split(':');
   let baseId, season, episode;
   if (parts[0] === 'tmdb') {
-    baseId  = parts[1];
-    season  = parts[2] || null;
-    episode = parts[3] || null;
+    baseId = parts[1]; season = parts[2] || null; episode = parts[3] || null;
   } else {
-    baseId  = parts[0];
-    season  = parts[1] || null;
-    episode = parts[2] || null;
+    baseId = parts[0]; season = parts[1] || null; episode = parts[2] || null;
   }
   const param = baseId.startsWith('tt') ? `imdb=${baseId}` : `tmdb=${baseId}`;
-
   if (type === 'movie') return `${BASE}/e/movie?${param}&view_key=${VIEW_KEY}`;
   if (type === 'series') {
     let url = `${BASE}/e/serie?${param}&view_key=${VIEW_KEY}`;
@@ -158,15 +204,11 @@ function buildEmbedUrl(type, id) {
   return null;
 }
 
-// ─────────────────────────────────────────────
-//  GET STREAM
-// ─────────────────────────────────────────────
 async function getStream(type, id) {
   const cacheKey = `${type}:${id}`;
   const cached   = cacheGet(cacheKey);
   if (cached) { console.log(`  [CACHE] ${cacheKey}`); return cached; }
 
-  // Convertir IMDb a TMDB si necesario
   const parts  = id.split(':');
   const baseId = parts[0] === 'tmdb' ? parts[1] : parts[0];
   if (baseId.startsWith('tt')) {
@@ -190,7 +232,7 @@ async function getStream(type, id) {
 }
 
 // ─────────────────────────────────────────────
-//  PROXY — con auto-refresh de token en 403
+//  PROXY
 // ─────────────────────────────────────────────
 async function fetchM3U8(url) {
   const r = await axios.get(url, { headers: getHeaders(url), timeout: 30000 });
@@ -215,8 +257,6 @@ app.get('/proxy/master', async (req, res) => {
     res.send(content);
   } catch (err) {
     console.error(`  [proxy/master] Error ${err.response?.status}: ${err.message}`);
-
-    // Token expirado — regenerar si tenemos type/id
     if (err.response?.status === 403 && type && id) {
       console.log(`  [proxy/master] Regenerando token...`);
       try {
@@ -236,6 +276,26 @@ app.get('/proxy/master', async (req, res) => {
       }
     }
     res.status(500).send('Error fetching master');
+  }
+});
+
+// Ruta especial para vimeos — resuelve con Browserless y redirige al proxy
+app.get('/proxy/vimeos', async (req, res) => {
+  const { url: urlB64, type, id } = req.query;
+  const embedUrl = Buffer.from(urlB64, 'base64').toString('utf8');
+  console.log(`\n  [proxy/vimeos] Resolviendo con Browserless: ${embedUrl}`);
+
+  try {
+    const m3u8 = await extractFromVimeos(embedUrl);
+    if (!m3u8) return res.status(404).send('No se encontró m3u8');
+
+    // Redirigir al proxy/master con el m3u8 real
+    const encoded  = Buffer.from(m3u8).toString('base64');
+    const proxyUrl = `/proxy/master?url=${encoded}&type=${type}&id=${id}`;
+    res.redirect(proxyUrl);
+  } catch (err) {
+    console.error(`  [proxy/vimeos] Error: ${err.message}`);
+    res.status(500).send('Error');
   }
 });
 
@@ -294,7 +354,7 @@ app.get('/manifest.json', (req, res) => {
     id          : 'org.vimeus.hls',
     name        : 'Vimeus',
     description : 'Stream HLS dinámico desde Vimeus',
-    version     : '6.0.0',
+    version     : '7.0.0',
     resources   : ['stream'],
     types       : ['movie', 'series'],
     catalogs    : [],
@@ -315,15 +375,25 @@ async function handleStream(req, res) {
 
     const streams = results.map(r => {
       if (r.m3u8) {
-        // Incluir type e id en la URL del proxy para poder regenerar el token
-        const encoded = Buffer.from(r.m3u8).toString('base64');
+        // Goodstream — proxy directo
+        const encoded  = Buffer.from(r.m3u8).toString('base64');
         const proxyUrl = `${HOST}/proxy/master?url=${encoded}&type=${type}&id=${id}`;
         return {
           name : `Vimeus · ${r.quality || 'HD'} · ${r.lang || ''}`.trim(),
-          title: `▶ ${r.source}`,
+          title: '▶ Goodstream',
+          url  : proxyUrl,
+        };
+      } else if (r.vimeosEmbed) {
+        // Vimeos — proxy via Browserless (se resuelve al elegir)
+        const encoded  = Buffer.from(r.vimeosEmbed).toString('base64');
+        const proxyUrl = `${HOST}/proxy/vimeos?url=${encoded}&type=${type}&id=${id}`;
+        return {
+          name : `Vimeus · ${r.quality || 'HD'} · ${r.lang || ''}`.trim(),
+          title: '▶ Vimeos (HD)',
           url  : proxyUrl,
         };
       } else {
+        // Otras — externas
         return {
           name       : `Vimeus · ${r.quality || 'HD'} · ${r.lang || ''}`.trim(),
           title      : `🌐 ${r.source}`,
@@ -365,7 +435,7 @@ setInterval(() => {
 //  START
 // ─────────────────────────────────────────────
 app.listen(PORT, () => {
-  console.log(`\n✅ Addon Vimeus v6.0 corriendo en http://localhost:${PORT}`);
+  console.log(`\n✅ Addon Vimeus v7.0 corriendo en http://localhost:${PORT}`);
   console.log(`   Manifest → http://localhost:${PORT}/manifest.json`);
   console.log(`   Debug    → http://localhost:${PORT}/debug/movie/tt2395427\n`);
 });

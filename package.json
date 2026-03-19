@@ -1,7 +1,7 @@
 {
   "name": "vimeus-addon",
-  "version": "5.0.0",
-  "description": "Stremio addon para Vimeus — goodstream + proxy HLS",
+  "version": "7.0.0",
+  "description": "Stremio addon para Vimeus — goodstream + vimeos via Browserless",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -9,7 +9,8 @@
   },
   "dependencies": {
     "axios": "^1.7.2",
-    "express": "^4.19.2"
+    "express": "^4.19.2",
+    "puppeteer-core": "^22.0.0"
   },
   "devDependencies": {
     "nodemon": "^3.1.0"
