@@ -256,7 +256,7 @@ app.get('/proxy/segment', async (req, res) => {
     const r = await axios.get(realUrl, {
       headers     : getHeaders(realUrl),
       responseType: 'stream',
-      timeout     : 30000,
+      timeout     : 60000,
     });
     res.set('Content-Type', r.headers['content-type'] || 'video/MP2T');
     res.set('Access-Control-Allow-Origin', '*');
@@ -345,6 +345,13 @@ app.get('/cache/clear', (req, res) => { cache.clear(); res.json({ ok: true }); }
 // ─────────────────────────────────────────────
 //  START
 // ─────────────────────────────────────────────
+// Keep-alive — evita que Railway hiberne el servidor
+setInterval(() => {
+  const url = HOST.startsWith('http') ? HOST : `http://localhost:${PORT}`;
+  axios.get(`${url}/manifest.json`).catch(() => {});
+  console.log('[keep-alive] ping');
+}, 5 * 60 * 1000); // cada 5 minutos
+
 app.listen(PORT, () => {
   console.log(`\n✅ Addon Vimeus v5.0 corriendo en http://localhost:${PORT}`);
   console.log(`   Manifest → http://localhost:${PORT}/manifest.json`);
