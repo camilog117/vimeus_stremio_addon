@@ -78,24 +78,54 @@ async function imdbToTmdb(imdbId, type) {
 //  VIMEUS — obtener embeds
 //  Maneja películas, series Y anime
 // ─────────────────────────────────────────────
-async function getEmbeds(embedUrl) {
-  console.log(`  [vimeus] ${embedUrl}`);
-  const { data: html } = await axios.get(embedUrl, {
+async function fetchEmbeds(url) {
+  const { data: html } = await axios.get(url, {
     headers: { ...HEADERS, 'Referer': 'https://vimeus.com/', 'Origin': 'https://vimeus.com' },
     timeout: 30000,
   });
   const match = html.match(/<script[^>]+id="data"[^>]*>([\s\S]*?)<\/script>/);
-  if (!match) throw new Error('No se encontró bloque de datos');
+  if (!match) return null;
   const data = JSON.parse(match[1].trim());
+  if (data.seasons && (!data.embeds || !data.embeds.length)) return null;
+  return { title: data.title, embeds: data.embeds || [] };
+}
 
-  // Anime sin episodio devuelve seasons — necesita se+ep en la URL
-  if (data.seasons && (!data.embeds || !data.embeds.length)) {
-    console.log(`  [vimeus] Anime: estructura de temporadas sin embeds — se necesita se+ep en URL`);
-    return [];
+async function getEmbeds(embedUrl, type, id) {
+  console.log(`  [vimeus] ${embedUrl}`);
+  try {
+    const result = await fetchEmbeds(embedUrl);
+    if (result) {
+      console.log(`  [vimeus] "${result.title}" — ${result.embeds.length} fuentes`);
+      return result.embeds;
+    }
+  } catch (err) {
+    // 404 o sin embeds — intentar con anime si es series
+    if (err.response?.status !== 404 && !err.message.includes('404')) throw err;
   }
 
-  console.log(`  [vimeus] "${data.title}" — ${data.embeds?.length || 0} fuentes`);
-  return data.embeds || [];
+  // Si serie falla, intentar con anime
+  if (type === 'series' || type === 'anime') {
+    const parts   = id.split(':');
+    const baseId  = parts[0] === 'tmdb' ? parts[1] : parts[0];
+    const season  = parts[0] === 'tmdb' ? parts[2] : parts[1];
+    const episode = parts[0] === 'tmdb' ? parts[3] : parts[2];
+    const param   = baseId.startsWith('tt') ? `imdb=${baseId}` : `tmdb=${baseId}`;
+    let animeUrl  = `${BASE}/e/anime?${param}&view_key=${VIEW_KEY}`;
+    if (season && episode) animeUrl += `&se=${season}&ep=${episode}`;
+
+    console.log(`  [vimeus] Reintentando como anime: ${animeUrl}`);
+    try {
+      const result = await fetchEmbeds(animeUrl);
+      if (result) {
+        console.log(`  [vimeus] ✅ Anime: "${result.title}" — ${result.embeds.length} fuentes`);
+        return result.embeds;
+      }
+    } catch (err2) {
+      console.log(`  [vimeus] Anime también falló: ${err2.message}`);
+    }
+  }
+
+  return [];
 }
 
 // ─────────────────────────────────────────────
@@ -233,7 +263,7 @@ async function getStream(type, id) {
   const embedUrl = buildEmbedUrl(type, id);
   if (!embedUrl) return null;
 
-  const embeds = await getEmbeds(embedUrl);
+  const embeds = await getEmbeds(embedUrl, type, id);
   if (!embeds.length) return null;
 
   const results = await getM3U8FromEmbeds(embeds);
