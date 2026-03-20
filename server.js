@@ -400,12 +400,11 @@ async function handleStream(req, res) {
           url  : proxyUrl,
         };
       } else if (r.vimeosEmbed) {
-        const encoded  = Buffer.from(r.vimeosEmbed).toString('base64');
-        const proxyUrl = `${HOST}/proxy/vimeos?url=${encoded}&type=${type}&id=${id}`;
         return {
           name : `Vimeus · ${r.quality || 'HD'} · ${r.lang || ''}`.trim(),
-          title: '▶ Vimeos (HD)',
-          url  : proxyUrl,
+          title: '🌐 Vimeos (HD)',
+          url  : r.vimeosEmbed,
+          behaviorHints: { notWebReady: true },
         };
       } else {
         return {
