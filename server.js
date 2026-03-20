@@ -152,23 +152,26 @@ async function getM3U8FromEmbeds(embeds) {
     return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
   });
 
-  const results = [];
-  for (const embed of sorted) {
+  // Procesar todas las fuentes en paralelo para mayor velocidad
+  const promises = sorted.map(async embed => {
     try {
       const hostname = new URL(embed.url).hostname;
       const isVimeos = VIMEOS_DOMAINS.some(d => embed.url.includes(d));
       if (embed.url.includes('goodstream.one')) {
         const m3u8 = await extractFromGoodstream(embed.url);
-        if (m3u8) results.push({ m3u8, lang: embed.lang, quality: embed.quality, source: 'goodstream', embedUrl: embed.url });
+        if (m3u8) return { m3u8, lang: embed.lang, quality: embed.quality, source: 'goodstream', embedUrl: embed.url };
       } else if (isVimeos) {
-        results.push({ vimeosEmbed: embed.url, lang: embed.lang, quality: embed.quality, source: hostname });
+        return { vimeosEmbed: embed.url, lang: embed.lang, quality: embed.quality, source: hostname };
       } else {
-        results.push({ externalUrl: embed.url, lang: embed.lang, quality: embed.quality, source: hostname });
+        return { externalUrl: embed.url, lang: embed.lang, quality: embed.quality, source: hostname };
       }
     } catch (err) {
       console.log(`  [warn] ${err.message}`);
     }
-  }
+    return null;
+  });
+
+  const results = (await Promise.all(promises)).filter(Boolean);
   return results;
 }
 
@@ -368,7 +371,7 @@ app.get('/manifest.json', (req, res) => {
     id          : 'org.vimeus.hls',
     name        : 'Vimeus',
     description : 'Stream HLS dinámico desde Vimeus',
-    version     : '8.0.0',
+    version     : '8.2.0',
     resources   : ['stream'],
     types       : ['movie', 'series'],
     catalogs    : [],
@@ -408,7 +411,8 @@ async function handleStream(req, res) {
         return {
           name       : `Vimeus · ${r.quality || 'HD'} · ${r.lang || ''}`.trim(),
           title      : `🌐 ${r.source}`,
-          externalUrl: r.externalUrl,
+          url        : r.externalUrl,
+          behaviorHints: { notWebReady: true },
         };
       }
     });
