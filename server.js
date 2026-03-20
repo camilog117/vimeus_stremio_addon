@@ -35,6 +35,18 @@ function getHeaders(url) {
 const cache     = new Map();
 const CACHE_TTL = 10 * 60 * 1000;
 
+// Cache de m3u8 frescos — TTL corto para token válido
+const m3u8Cache     = new Map();
+const M3U8_CACHE_TTL = 90 * 1000; // 90 segundos
+
+function m3u8CacheGet(key) {
+  const e = m3u8Cache.get(key);
+  if (!e) return null;
+  if (Date.now() - e.ts > M3U8_CACHE_TTL) { m3u8Cache.delete(key); return null; }
+  return e.url;
+}
+function m3u8CacheSet(key, url) { m3u8Cache.set(key, { url, ts: Date.now() }); }
+
 function cacheGet(key) {
   const e = cache.get(key);
   if (!e) return null;
@@ -248,16 +260,25 @@ async function fetchM3U8(url) {
 app.get('/proxy/goodstream', async (req, res) => {
   const { embed: embedB64, type, id } = req.query;
   const embedUrl = Buffer.from(embedB64, 'base64').toString('utf8');
-  console.log(`  [proxy/goodstream] Resolviendo token fresco: ${embedUrl}`);
-  try {
-    const m3u8 = await extractFromGoodstream(embedUrl);
-    if (!m3u8) return res.status(404).send('No se encontró m3u8');
-    const encoded  = Buffer.from(m3u8).toString('base64');
-    res.redirect(`/proxy/master?url=${encoded}&type=${type}&id=${id}`);
-  } catch (err) {
-    console.error(`  [proxy/goodstream] Error: ${err.message}`);
-    res.status(500).send('Error');
+  const cacheKey = `m3u8:${embedUrl}`;
+
+  // Usar m3u8 cacheado si está fresco
+  let m3u8 = m3u8CacheGet(cacheKey);
+  if (m3u8) {
+    console.log(`  [proxy/goodstream] Token en cache`);
+  } else {
+    console.log(`  [proxy/goodstream] Obteniendo token fresco: ${embedUrl}`);
+    try {
+      m3u8 = await extractFromGoodstream(embedUrl);
+      if (!m3u8) return res.status(404).send('No se encontró m3u8');
+      m3u8CacheSet(cacheKey, m3u8);
+    } catch (err) {
+      console.error(`  [proxy/goodstream] Error: ${err.message}`);
+      return res.status(500).send('Error');
+    }
   }
+  const encoded = Buffer.from(m3u8).toString('base64');
+  res.redirect(`/proxy/master?url=${encoded}&type=${type}&id=${id}`);
 });
 
 app.get('/proxy/master', async (req, res) => {
@@ -414,6 +435,18 @@ async function handleStream(req, res) {
           title      : `🌐 ${r.source}`,
           externalUrl: r.externalUrl,
         };
+      }
+    });
+
+    // Pre-calentar m3u8 de goodstream en background
+    results.forEach(r => {
+      if (r.embedUrl) {
+        const cacheKey = `m3u8:${r.embedUrl}`;
+        if (!m3u8CacheGet(cacheKey)) {
+          extractFromGoodstream(r.embedUrl)
+            .then(m3u8 => { if (m3u8) m3u8CacheSet(cacheKey, m3u8); })
+            .catch(() => {});
+        }
       }
     });
 
