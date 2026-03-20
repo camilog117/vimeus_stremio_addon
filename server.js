@@ -277,8 +277,47 @@ app.get('/proxy/goodstream', async (req, res) => {
       return res.status(500).send('Error');
     }
   }
-  const encoded = Buffer.from(m3u8).toString('base64');
-  res.redirect(`/proxy/master?url=${encoded}&type=${type}&id=${id}`);
+
+  // Servir el master.m3u8 directamente sin redirect — más rápido para TV
+  try {
+    const r = await axios.get(m3u8, { headers: getHeaders(m3u8), timeout: 30000 });
+    let content = r.data;
+    const base  = m3u8.substring(0, m3u8.lastIndexOf('/') + 1);
+    content = content.replace(/^([^#
+][^
+]+\.m3u8[^
+]*)$/gm, line => {
+      const abs = line.trim().startsWith('http') ? line.trim() : base + line.trim();
+      return `${HOST}/proxy/rendition?url=${Buffer.from(abs).toString('base64')}`;
+    });
+    res.set('Content-Type', 'application/vnd.apple.mpegurl');
+    res.set('Access-Control-Allow-Origin', '*');
+    res.send(content);
+  } catch (err) {
+    // Token expirado — obtener uno nuevo
+    console.log(`  [proxy/goodstream] Token expirado, renovando...`);
+    m3u8Cache.delete(cacheKey);
+    try {
+      m3u8 = await extractFromGoodstream(embedUrl);
+      if (!m3u8) return res.status(404).send('No se encontró m3u8');
+      m3u8CacheSet(cacheKey, m3u8);
+      const r = await axios.get(m3u8, { headers: getHeaders(m3u8), timeout: 30000 });
+      let content = r.data;
+      const base  = m3u8.substring(0, m3u8.lastIndexOf('/') + 1);
+      content = content.replace(/^([^#
+][^
+]+\.m3u8[^
+]*)$/gm, line => {
+        const abs = line.trim().startsWith('http') ? line.trim() : base + line.trim();
+        return `${HOST}/proxy/rendition?url=${Buffer.from(abs).toString('base64')}`;
+      });
+      res.set('Content-Type', 'application/vnd.apple.mpegurl');
+      res.set('Access-Control-Allow-Origin', '*');
+      res.send(content);
+    } catch(e) {
+      res.status(500).send('Error');
+    }
+  }
 });
 
 app.get('/proxy/master', async (req, res) => {
@@ -411,37 +450,13 @@ async function handleStream(req, res) {
 
     const streams = results.map(r => {
       if (r.m3u8) {
-        // Intentar devolver m3u8 directo — más rápido para TV
-        // El m3u8 pre-calentado está en cache
-        const cacheKey = `m3u8:${r.embedUrl}`;
-        const cachedM3u8 = m3u8CacheGet(cacheKey);
-        
-        if (cachedM3u8) {
-          // Token fresco disponible — devolver directo
-          return {
-            name : `Vimeus · ${r.quality || 'HD'} · ${r.lang || ''}`.trim(),
-            title: '▶ Goodstream',
-            url  : cachedM3u8,
-            behaviorHints: {
-              notWebReady: false,
-              proxyHeaders: {
-                request: {
-                  referer: 'https://goodstream.one/',
-                  origin : 'https://goodstream.one',
-                }
-              }
-            }
-          };
-        } else {
-          // Sin cache — usar proxy
-          const encoded  = Buffer.from(r.embedUrl).toString('base64');
-          const proxyUrl = `${HOST}/proxy/goodstream?embed=${encoded}&type=${type}&id=${id}`;
-          return {
-            name : `Vimeus · ${r.quality || 'HD'} · ${r.lang || ''}`.trim(),
-            title: '▶ Goodstream',
-            url  : proxyUrl,
-          };
-        }
+        const encoded  = Buffer.from(r.embedUrl).toString('base64');
+        const proxyUrl = `${HOST}/proxy/goodstream?embed=${encoded}&type=${type}&id=${id}`;
+        return {
+          name : `Vimeus · ${r.quality || 'HD'} · ${r.lang || ''}`.trim(),
+          title: '▶ Goodstream',
+          url  : proxyUrl,
+        };
       } else if (r.vimeosEmbed) {
         // Vimeos — proxy via Browserless (se resuelve al elegir)
         const encoded  = Buffer.from(r.vimeosEmbed).toString('base64');
