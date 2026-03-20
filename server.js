@@ -32,8 +32,10 @@ function getHeaders(url) {
 // ─────────────────────────────────────────────
 //  CACHE
 // ─────────────────────────────────────────────
-const cache     = new Map();
-const CACHE_TTL = 10 * 60 * 1000;
+const cache      = new Map();
+const CACHE_TTL  = 10 * 60 * 1000;
+const m3u8Cache  = new Map();
+const M3U8_TTL   = 90 * 1000;
 
 function cacheGet(key) {
   const e = cache.get(key);
@@ -43,20 +45,16 @@ function cacheGet(key) {
 }
 function cacheSet(key, data) { cache.set(key, { data, ts: Date.now() }); }
 
-// Cache de m3u8 frescos con TTL corto
-const m3u8Cache     = new Map();
-const M3U8_CACHE_TTL = 90 * 1000; // 90 segundos
-
-function m3u8CacheGet(key) {
+function m3u8Get(key) {
   const e = m3u8Cache.get(key);
   if (!e) return null;
-  if (Date.now() - e.ts > M3U8_CACHE_TTL) { m3u8Cache.delete(key); return null; }
+  if (Date.now() - e.ts > M3U8_TTL) { m3u8Cache.delete(key); return null; }
   return e.url;
 }
-function m3u8CacheSet(key, url) { m3u8Cache.set(key, { url, ts: Date.now() }); }
+function m3u8Set(key, url) { m3u8Cache.set(key, { url, ts: Date.now() }); }
 
 // ─────────────────────────────────────────────
-//  TMDB
+//  TMDB — convertir IMDb a TMDB
 // ─────────────────────────────────────────────
 const imdbCache = new Map();
 
@@ -77,35 +75,8 @@ async function imdbToTmdb(imdbId, type) {
 }
 
 // ─────────────────────────────────────────────
-//  KITSU → TMDB conversion
-// ─────────────────────────────────────────────
-const kitsuCache = new Map();
-
-async function kitsuToTmdb(kitsuId) {
-  if (kitsuCache.has(kitsuId)) return kitsuCache.get(kitsuId);
-  try {
-    // Usar la API de Kitsu para obtener el título y buscarlo en TMDB
-    const kitsuRes = await axios.get(`https://kitsu.io/api/edge/anime/${kitsuId}`, { timeout: 10000 });
-    const title    = kitsuRes.data?.data?.attributes?.canonicalTitle;
-    if (!title) return null;
-    console.log(`  [kitsu] Título: ${title}`);
-
-    // Buscar en TMDB
-    const tmdbRes = await axios.get(`https://api.themoviedb.org/3/search/tv?api_key=${TMDB_KEY}&query=${encodeURIComponent(title)}`, { timeout: 10000 });
-    const tmdbId  = tmdbRes.data?.results?.[0]?.id?.toString() || null;
-    if (tmdbId) {
-      kitsuCache.set(kitsuId, tmdbId);
-      console.log(`  [kitsu] ${kitsuId} → tmdb:${tmdbId}`);
-    }
-    return tmdbId;
-  } catch (err) {
-    console.log(`  [kitsu] Error: ${err.message}`);
-    return null;
-  }
-}
-
-// ─────────────────────────────────────────────
 //  VIMEUS — obtener embeds
+//  Maneja películas, series Y anime
 // ─────────────────────────────────────────────
 async function getEmbeds(embedUrl) {
   console.log(`  [vimeus] ${embedUrl}`);
@@ -116,6 +87,13 @@ async function getEmbeds(embedUrl) {
   const match = html.match(/<script[^>]+id="data"[^>]*>([\s\S]*?)<\/script>/);
   if (!match) throw new Error('No se encontró bloque de datos');
   const data = JSON.parse(match[1].trim());
+
+  // Anime sin episodio devuelve seasons — necesita se+ep en la URL
+  if (data.seasons && (!data.embeds || !data.embeds.length)) {
+    console.log(`  [vimeus] Anime: estructura de temporadas sin embeds — se necesita se+ep en URL`);
+    return [];
+  }
+
   console.log(`  [vimeus] "${data.title}" — ${data.embeds?.length || 0} fuentes`);
   return data.embeds || [];
 }
@@ -180,7 +158,6 @@ async function getM3U8FromEmbeds(embeds) {
     return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
   });
 
-  // Procesar todas las fuentes en paralelo para mayor velocidad
   const promises = sorted.map(async embed => {
     try {
       const hostname = new URL(embed.url).hostname;
@@ -199,8 +176,7 @@ async function getM3U8FromEmbeds(embeds) {
     return null;
   });
 
-  const results = (await Promise.all(promises)).filter(Boolean);
-  return results;
+  return (await Promise.all(promises)).filter(Boolean);
 }
 
 // ─────────────────────────────────────────────
@@ -215,7 +191,10 @@ function buildEmbedUrl(type, id) {
     baseId = parts[0]; season = parts[1] || null; episode = parts[2] || null;
   }
   const param = baseId.startsWith('tt') ? `imdb=${baseId}` : `tmdb=${baseId}`;
-  if (type === 'movie') return `${BASE}/e/movie?${param}&view_key=${VIEW_KEY}`;
+
+  if (type === 'movie') {
+    return `${BASE}/e/movie?${param}&view_key=${VIEW_KEY}`;
+  }
   if (type === 'series') {
     let url = `${BASE}/e/serie?${param}&view_key=${VIEW_KEY}`;
     if (season && episode) url += `&se=${season}&ep=${episode}`;
@@ -229,22 +208,20 @@ function buildEmbedUrl(type, id) {
   return null;
 }
 
+// ─────────────────────────────────────────────
+//  GET STREAM
+// ─────────────────────────────────────────────
 async function getStream(type, id) {
   const cacheKey = `${type}:${id}`;
   const cached   = cacheGet(cacheKey);
   if (cached) { console.log(`  [CACHE] ${cacheKey}`); return cached; }
 
+  // Convertir IMDb a TMDB si necesario
   const parts  = id.split(':');
   const prefix = parts[0];
   const baseId = prefix === 'tmdb' || prefix === 'kitsu' ? parts[1] : parts[0];
 
-  // Kitsu IDs necesitan conversión a TMDB
-  if (prefix === 'kitsu') {
-    console.log(`  [kitsu] Buscando TMDB ID para kitsu:${baseId}`);
-    const tmdbId = await kitsuToTmdb(baseId);
-    if (!tmdbId) { console.log(`  → No TMDB ID para kitsu:${baseId}`); return null; }
-    id = [tmdbId, ...parts.slice(2)].join(':');
-  } else if (baseId.startsWith('tt')) {
+  if (baseId.startsWith('tt')) {
     const tmdbId = await imdbToTmdb(baseId, type);
     if (!tmdbId) { console.log(`  → No TMDB ID para ${baseId}`); return null; }
     const newId = prefix === 'tmdb'
@@ -267,8 +244,6 @@ async function getStream(type, id) {
 // ─────────────────────────────────────────────
 //  PROXY
 // ─────────────────────────────────────────────
-
-// Goodstream — obtiene token fresco y sirve master.m3u8 en un solo request
 app.get('/proxy/goodstream', async (req, res) => {
   const { embed: embedB64, type, id } = req.query;
   const embedUrl = Buffer.from(embedB64, 'base64').toString('utf8');
@@ -287,24 +262,17 @@ app.get('/proxy/goodstream', async (req, res) => {
     res.send(content);
   };
 
-  // Usar token cacheado si está fresco
-  let m3u8 = m3u8CacheGet(cacheKey);
+  let m3u8 = m3u8Get(cacheKey);
   if (m3u8) {
     console.log(`  [proxy/goodstream] Token en cache`);
-    try {
-      return await serveM3U8(m3u8);
-    } catch (err) {
-      console.log(`  [proxy/goodstream] Token cacheado expiró, renovando...`);
-      m3u8Cache.delete(cacheKey);
-    }
+    try { return await serveM3U8(m3u8); } catch (_) { m3u8Cache.delete(cacheKey); }
   }
 
-  // Obtener token fresco
   console.log(`  [proxy/goodstream] Obteniendo token fresco`);
   try {
     m3u8 = await extractFromGoodstream(embedUrl);
     if (!m3u8) return res.status(404).send('No se encontró m3u8');
-    m3u8CacheSet(cacheKey, m3u8);
+    m3u8Set(cacheKey, m3u8);
     return await serveM3U8(m3u8);
   } catch (err) {
     console.error(`  [proxy/goodstream] Error: ${err.message}`);
@@ -312,7 +280,6 @@ app.get('/proxy/goodstream', async (req, res) => {
   }
 });
 
-// Vimeos — resuelve con Browserless
 app.get('/proxy/vimeos', async (req, res) => {
   const { url: urlB64, type, id } = req.query;
   const embedUrl = Buffer.from(urlB64, 'base64').toString('utf8');
@@ -328,7 +295,6 @@ app.get('/proxy/vimeos', async (req, res) => {
   }
 });
 
-// Master m3u8 — reescribe variantes
 app.get('/proxy/master', async (req, res) => {
   const { url: urlB64 } = req.query;
   const realUrl = Buffer.from(urlB64, 'base64').toString('utf8');
@@ -350,7 +316,6 @@ app.get('/proxy/master', async (req, res) => {
   }
 });
 
-// Rendition — reescribe segmentos
 app.get('/proxy/rendition', async (req, res) => {
   const realUrl = Buffer.from(req.query.url, 'base64').toString('utf8');
   try {
@@ -373,7 +338,6 @@ app.get('/proxy/rendition', async (req, res) => {
   }
 });
 
-// Segmentos .ts
 app.get('/proxy/segment', async (req, res) => {
   const realUrl = Buffer.from(req.query.url, 'base64').toString('utf8');
   try {
@@ -407,7 +371,7 @@ app.get('/manifest.json', (req, res) => {
     id          : 'org.vimeus.hls',
     name        : 'Vimeus',
     description : 'Stream HLS dinámico desde Vimeus',
-    version     : '8.2.0',
+    version     : '9.0.0',
     resources   : ['stream'],
     types       : ['movie', 'series', 'anime'],
     catalogs    : [],
@@ -444,9 +408,9 @@ async function handleStream(req, res) {
         };
       } else {
         return {
-          name       : `Vimeus · ${r.quality || 'HD'} · ${r.lang || ''}`.trim(),
-          title      : `🌐 ${r.source}`,
-          url        : r.externalUrl,
+          name : `Vimeus · ${r.quality || 'HD'} · ${r.lang || ''}`.trim(),
+          title: `🌐 ${r.source}`,
+          url  : r.externalUrl,
           behaviorHints: { notWebReady: true },
         };
       }
@@ -471,7 +435,10 @@ app.get('/debug/:type/:id', async (req, res) => {
   }
 });
 
-app.get('/cache/clear', (req, res) => { cache.clear(); m3u8Cache.clear(); res.json({ ok: true }); });
+app.get('/cache/clear', (req, res) => {
+  cache.clear(); m3u8Cache.clear();
+  res.json({ ok: true });
+});
 
 // ─────────────────────────────────────────────
 //  KEEP-ALIVE
@@ -485,7 +452,8 @@ setInterval(() => {
 //  START
 // ─────────────────────────────────────────────
 app.listen(PORT, () => {
-  console.log(`\n✅ Addon Vimeus v8.0 corriendo en http://localhost:${PORT}`);
+  console.log(`\n✅ Addon Vimeus v9.0 corriendo en http://localhost:${PORT}`);
   console.log(`   Manifest → http://localhost:${PORT}/manifest.json`);
-  console.log(`   Debug    → http://localhost:${PORT}/debug/movie/tt2395427\n`);
+  console.log(`   Debug    → http://localhost:${PORT}/debug/movie/tt2395427`);
+  console.log(`   Anime    → http://localhost:${PORT}/debug/anime/70881:1:1\n`);
 });
