@@ -35,7 +35,15 @@ function getHeaders(url) {
 const cache     = new Map();
 const CACHE_TTL = 10 * 60 * 1000;
 
-// Cache de m3u8 frescos — TTL corto para token válido
+function cacheGet(key) {
+  const e = cache.get(key);
+  if (!e) return null;
+  if (Date.now() - e.ts > CACHE_TTL) { cache.delete(key); return null; }
+  return e.data;
+}
+function cacheSet(key, data) { cache.set(key, { data, ts: Date.now() }); }
+
+// Cache de m3u8 frescos con TTL corto
 const m3u8Cache     = new Map();
 const M3U8_CACHE_TTL = 90 * 1000; // 90 segundos
 
@@ -46,14 +54,6 @@ function m3u8CacheGet(key) {
   return e.url;
 }
 function m3u8CacheSet(key, url) { m3u8Cache.set(key, { url, ts: Date.now() }); }
-
-function cacheGet(key) {
-  const e = cache.get(key);
-  if (!e) return null;
-  if (Date.now() - e.ts > CACHE_TTL) { cache.delete(key); return null; }
-  return e.data;
-}
-function cacheSet(key, data) { cache.set(key, { data, ts: Date.now() }); }
 
 // ─────────────────────────────────────────────
 //  TMDB
@@ -93,7 +93,7 @@ async function getEmbeds(embedUrl) {
 }
 
 // ─────────────────────────────────────────────
-//  GOODSTREAM — extraer m3u8 con axios
+//  GOODSTREAM — extraer m3u8
 // ─────────────────────────────────────────────
 async function extractFromGoodstream(embedUrl) {
   console.log(`  [goodstream] ${embedUrl}`);
@@ -104,7 +104,7 @@ async function extractFromGoodstream(embedUrl) {
 }
 
 // ─────────────────────────────────────────────
-//  VIMEOS — extraer m3u8 con Browserless (Chrome real)
+//  VIMEOS — extraer m3u8 via Browserless
 // ─────────────────────────────────────────────
 async function extractFromVimeos(embedUrl) {
   console.log(`  [vimeos/browserless] ${embedUrl}`);
@@ -113,34 +113,22 @@ async function extractFromVimeos(embedUrl) {
     browser = await puppeteer.connect({
       browserWSEndpoint: `wss://production-sfo.browserless.io?token=${BROWSERLESS_KEY}&stealth=true&blockAds=true`,
     });
-
-    const page = await browser.newPage();
-    let m3u8   = null;
-
-    // Usar CDP para capturar requests de todos los frames incluyendo iframes
+    const page   = await browser.newPage();
+    let m3u8     = null;
     const client = await page.createCDPSession();
     await client.send('Network.enable');
-
     client.on('Network.requestWillBeSent', ({ request }) => {
       if (!m3u8 && request.url.includes('.m3u8')) {
         m3u8 = request.url;
         console.log(`  [vimeos/browserless] ✅ ${request.url.slice(0, 80)}...`);
       }
     });
-
-    await page.setExtraHTTPHeaders({
-      'Referer': 'https://vimeus.com/',
-      'Origin' : 'https://vimeus.com',
-    });
-
+    await page.setExtraHTTPHeaders({ 'Referer': 'https://vimeus.com/', 'Origin': 'https://vimeus.com' });
     await page.goto(embedUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-
-    // Esperar hasta 20s al m3u8
     const deadline = Date.now() + 20000;
     while (!m3u8 && Date.now() < deadline) {
       await new Promise(r => setTimeout(r, 500));
     }
-
     await page.close();
     return m3u8;
   } catch (err) {
@@ -169,18 +157,12 @@ async function getM3U8FromEmbeds(embeds) {
     try {
       const hostname = new URL(embed.url).hostname;
       const isVimeos = VIMEOS_DOMAINS.some(d => embed.url.includes(d));
-
       if (embed.url.includes('goodstream.one')) {
-        // Goodstream — resolver inmediatamente con axios
         const m3u8 = await extractFromGoodstream(embed.url);
-        if (m3u8) {
-          results.push({ m3u8, lang: embed.lang, quality: embed.quality, source: 'goodstream', embedUrl: embed.url });
-        }
+        if (m3u8) results.push({ m3u8, lang: embed.lang, quality: embed.quality, source: 'goodstream', embedUrl: embed.url });
       } else if (isVimeos) {
-        // Vimeos — agregar como fuente separada que se resuelve con Browserless al elegirla
         results.push({ vimeosEmbed: embed.url, lang: embed.lang, quality: embed.quality, source: hostname });
       } else {
-        // Otras fuentes — externalUrl
         results.push({ externalUrl: embed.url, lang: embed.lang, quality: embed.quality, source: hostname });
       }
     } catch (err) {
@@ -246,47 +228,77 @@ async function getStream(type, id) {
 // ─────────────────────────────────────────────
 //  PROXY
 // ─────────────────────────────────────────────
-async function fetchM3U8(url) {
-  const r = await axios.get(url, { headers: getHeaders(url), timeout: 30000 });
-  let content = r.data;
-  const base  = url.substring(0, url.lastIndexOf('/') + 1);
-  content = content.replace(/^([^#\r\n][^\r\n]+\.m3u8[^\r\n]*)$/gm, line => {
-    const abs = line.trim().startsWith('http') ? line.trim() : base + line.trim();
-    return `${HOST}/proxy/rendition?url=${Buffer.from(abs).toString('base64')}`;
-  });
-  return content;
-}
 
+// Goodstream — obtiene token fresco y sirve master.m3u8 en un solo request
 app.get('/proxy/goodstream', async (req, res) => {
   const { embed: embedB64, type, id } = req.query;
   const embedUrl = Buffer.from(embedB64, 'base64').toString('utf8');
   const cacheKey = `m3u8:${embedUrl}`;
 
-  // Usar m3u8 cacheado si está fresco
+  const serveM3U8 = async (m3u8Url) => {
+    const r    = await axios.get(m3u8Url, { headers: getHeaders(m3u8Url), timeout: 30000 });
+    let content = r.data;
+    const base  = m3u8Url.substring(0, m3u8Url.lastIndexOf('/') + 1);
+    content = content.replace(/^([^#\r\n][^\r\n]+\.m3u8[^\r\n]*)$/gm, line => {
+      const abs = line.trim().startsWith('http') ? line.trim() : base + line.trim();
+      return `${HOST}/proxy/rendition?url=${Buffer.from(abs).toString('base64')}`;
+    });
+    res.set('Content-Type', 'application/vnd.apple.mpegurl');
+    res.set('Access-Control-Allow-Origin', '*');
+    res.send(content);
+  };
+
+  // Usar token cacheado si está fresco
   let m3u8 = m3u8CacheGet(cacheKey);
   if (m3u8) {
     console.log(`  [proxy/goodstream] Token en cache`);
-  } else {
-    console.log(`  [proxy/goodstream] Obteniendo token fresco: ${embedUrl}`);
     try {
-      m3u8 = await extractFromGoodstream(embedUrl);
-      if (!m3u8) return res.status(404).send('No se encontró m3u8');
-      m3u8CacheSet(cacheKey, m3u8);
+      return await serveM3U8(m3u8);
     } catch (err) {
-      console.error(`  [proxy/goodstream] Error: ${err.message}`);
-      return res.status(500).send('Error');
+      console.log(`  [proxy/goodstream] Token cacheado expiró, renovando...`);
+      m3u8Cache.delete(cacheKey);
     }
   }
 
-  // Servir el master.m3u8 directamente sin redirect — más rápido para TV
+  // Obtener token fresco
+  console.log(`  [proxy/goodstream] Obteniendo token fresco`);
   try {
-    const r = await axios.get(m3u8, { headers: getHeaders(m3u8), timeout: 30000 });
+    m3u8 = await extractFromGoodstream(embedUrl);
+    if (!m3u8) return res.status(404).send('No se encontró m3u8');
+    m3u8CacheSet(cacheKey, m3u8);
+    return await serveM3U8(m3u8);
+  } catch (err) {
+    console.error(`  [proxy/goodstream] Error: ${err.message}`);
+    return res.status(500).send('Error');
+  }
+});
+
+// Vimeos — resuelve con Browserless
+app.get('/proxy/vimeos', async (req, res) => {
+  const { url: urlB64, type, id } = req.query;
+  const embedUrl = Buffer.from(urlB64, 'base64').toString('utf8');
+  console.log(`  [proxy/vimeos] ${embedUrl}`);
+  try {
+    const m3u8 = await extractFromVimeos(embedUrl);
+    if (!m3u8) return res.status(404).send('No se encontró m3u8');
+    const encoded = Buffer.from(m3u8).toString('base64');
+    res.redirect(`/proxy/master?url=${encoded}&type=${type}&id=${id}`);
+  } catch (err) {
+    console.error(`  [proxy/vimeos] Error: ${err.message}`);
+    res.status(500).send('Error');
+  }
+});
+
+// Master m3u8 — reescribe variantes
+app.get('/proxy/master', async (req, res) => {
+  const { url: urlB64 } = req.query;
+  const realUrl = Buffer.from(urlB64, 'base64').toString('utf8');
+  console.log(`  [proxy/master] ${realUrl.slice(0, 80)}...`);
+  try {
+    const r    = await axios.get(realUrl, { headers: getHeaders(realUrl), timeout: 30000 });
     let content = r.data;
-    const base  = m3u8.substring(0, m3u8.lastIndexOf('/') + 1);
-    content = content.replace(/^([^#
-][^
-]+\.m3u8[^
-]*)$/gm, line => {
+    const base  = realUrl.substring(0, realUrl.lastIndexOf('/') + 1);
+    content = content.replace(/^([^#\r\n][^\r\n]+\.m3u8[^\r\n]*)$/gm, line => {
       const abs = line.trim().startsWith('http') ? line.trim() : base + line.trim();
       return `${HOST}/proxy/rendition?url=${Buffer.from(abs).toString('base64')}`;
     });
@@ -294,86 +306,12 @@ app.get('/proxy/goodstream', async (req, res) => {
     res.set('Access-Control-Allow-Origin', '*');
     res.send(content);
   } catch (err) {
-    // Token expirado — obtener uno nuevo
-    console.log(`  [proxy/goodstream] Token expirado, renovando...`);
-    m3u8Cache.delete(cacheKey);
-    try {
-      m3u8 = await extractFromGoodstream(embedUrl);
-      if (!m3u8) return res.status(404).send('No se encontró m3u8');
-      m3u8CacheSet(cacheKey, m3u8);
-      const r = await axios.get(m3u8, { headers: getHeaders(m3u8), timeout: 30000 });
-      let content = r.data;
-      const base  = m3u8.substring(0, m3u8.lastIndexOf('/') + 1);
-      content = content.replace(/^([^#
-][^
-]+\.m3u8[^
-]*)$/gm, line => {
-        const abs = line.trim().startsWith('http') ? line.trim() : base + line.trim();
-        return `${HOST}/proxy/rendition?url=${Buffer.from(abs).toString('base64')}`;
-      });
-      res.set('Content-Type', 'application/vnd.apple.mpegurl');
-      res.set('Access-Control-Allow-Origin', '*');
-      res.send(content);
-    } catch(e) {
-      res.status(500).send('Error');
-    }
-  }
-});
-
-app.get('/proxy/master', async (req, res) => {
-  const { url: urlB64, type, id } = req.query;
-  const realUrl = Buffer.from(urlB64, 'base64').toString('utf8');
-  console.log(`  [proxy/master] ${realUrl.slice(0, 80)}...`);
-
-  try {
-    const content = await fetchM3U8(realUrl);
-    res.set('Content-Type', 'application/vnd.apple.mpegurl');
-    res.set('Access-Control-Allow-Origin', '*');
-    res.send(content);
-  } catch (err) {
-    console.error(`  [proxy/master] Error ${err.response?.status}: ${err.message}`);
-    if (err.response?.status === 403 && type && id) {
-      console.log(`  [proxy/master] Regenerando token...`);
-      try {
-        cache.delete(`${type}:${id}`);
-        const streams = await getStream(type, id);
-        if (streams) {
-          const fresh = streams.find(s => s.m3u8);
-          if (fresh) {
-            const content = await fetchM3U8(fresh.m3u8);
-            res.set('Content-Type', 'application/vnd.apple.mpegurl');
-            res.set('Access-Control-Allow-Origin', '*');
-            return res.send(content);
-          }
-        }
-      } catch (e) {
-        console.error(`  [proxy/master] Regeneración falló: ${e.message}`);
-      }
-    }
+    console.error(`  [proxy/master] Error: ${err.message}`);
     res.status(500).send('Error fetching master');
   }
 });
 
-// Ruta especial para vimeos — resuelve con Browserless y redirige al proxy
-app.get('/proxy/vimeos', async (req, res) => {
-  const { url: urlB64, type, id } = req.query;
-  const embedUrl = Buffer.from(urlB64, 'base64').toString('utf8');
-  console.log(`\n  [proxy/vimeos] Resolviendo con Browserless: ${embedUrl}`);
-
-  try {
-    const m3u8 = await extractFromVimeos(embedUrl);
-    if (!m3u8) return res.status(404).send('No se encontró m3u8');
-
-    // Redirigir al proxy/master con el m3u8 real
-    const encoded  = Buffer.from(m3u8).toString('base64');
-    const proxyUrl = `/proxy/master?url=${encoded}&type=${type}&id=${id}`;
-    res.redirect(proxyUrl);
-  } catch (err) {
-    console.error(`  [proxy/vimeos] Error: ${err.message}`);
-    res.status(500).send('Error');
-  }
-});
-
+// Rendition — reescribe segmentos
 app.get('/proxy/rendition', async (req, res) => {
   const realUrl = Buffer.from(req.query.url, 'base64').toString('utf8');
   try {
@@ -396,6 +334,7 @@ app.get('/proxy/rendition', async (req, res) => {
   }
 });
 
+// Segmentos .ts
 app.get('/proxy/segment', async (req, res) => {
   const realUrl = Buffer.from(req.query.url, 'base64').toString('utf8');
   try {
@@ -429,7 +368,7 @@ app.get('/manifest.json', (req, res) => {
     id          : 'org.vimeus.hls',
     name        : 'Vimeus',
     description : 'Stream HLS dinámico desde Vimeus',
-    version     : '7.0.0',
+    version     : '8.0.0',
     resources   : ['stream'],
     types       : ['movie', 'series'],
     catalogs    : [],
@@ -449,7 +388,7 @@ async function handleStream(req, res) {
     if (!results) return res.json({ streams: [] });
 
     const streams = results.map(r => {
-      if (r.m3u8) {
+      if (r.embedUrl) {
         const encoded  = Buffer.from(r.embedUrl).toString('base64');
         const proxyUrl = `${HOST}/proxy/goodstream?embed=${encoded}&type=${type}&id=${id}`;
         return {
@@ -458,7 +397,6 @@ async function handleStream(req, res) {
           url  : proxyUrl,
         };
       } else if (r.vimeosEmbed) {
-        // Vimeos — proxy via Browserless (se resuelve al elegir)
         const encoded  = Buffer.from(r.vimeosEmbed).toString('base64');
         const proxyUrl = `${HOST}/proxy/vimeos?url=${encoded}&type=${type}&id=${id}`;
         return {
@@ -467,7 +405,6 @@ async function handleStream(req, res) {
           url  : proxyUrl,
         };
       } else {
-        // Otras — externas
         return {
           name       : `Vimeus · ${r.quality || 'HD'} · ${r.lang || ''}`.trim(),
           title      : `🌐 ${r.source}`,
@@ -507,7 +444,7 @@ app.get('/debug/:type/:id', async (req, res) => {
   }
 });
 
-app.get('/cache/clear', (req, res) => { cache.clear(); res.json({ ok: true }); });
+app.get('/cache/clear', (req, res) => { cache.clear(); m3u8Cache.clear(); res.json({ ok: true }); });
 
 // ─────────────────────────────────────────────
 //  KEEP-ALIVE
@@ -521,7 +458,7 @@ setInterval(() => {
 //  START
 // ─────────────────────────────────────────────
 app.listen(PORT, () => {
-  console.log(`\n✅ Addon Vimeus v7.0 corriendo en http://localhost:${PORT}`);
+  console.log(`\n✅ Addon Vimeus v8.0 corriendo en http://localhost:${PORT}`);
   console.log(`   Manifest → http://localhost:${PORT}/manifest.json`);
   console.log(`   Debug    → http://localhost:${PORT}/debug/movie/tt2395427\n`);
 });
