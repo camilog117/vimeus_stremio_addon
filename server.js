@@ -245,6 +245,21 @@ async function fetchM3U8(url) {
   return content;
 }
 
+app.get('/proxy/goodstream', async (req, res) => {
+  const { embed: embedB64, type, id } = req.query;
+  const embedUrl = Buffer.from(embedB64, 'base64').toString('utf8');
+  console.log(`  [proxy/goodstream] Resolviendo token fresco: ${embedUrl}`);
+  try {
+    const m3u8 = await extractFromGoodstream(embedUrl);
+    if (!m3u8) return res.status(404).send('No se encontró m3u8');
+    const encoded  = Buffer.from(m3u8).toString('base64');
+    res.redirect(`/proxy/master?url=${encoded}&type=${type}&id=${id}`);
+  } catch (err) {
+    console.error(`  [proxy/goodstream] Error: ${err.message}`);
+    res.status(500).send('Error');
+  }
+});
+
 app.get('/proxy/master', async (req, res) => {
   const { url: urlB64, type, id } = req.query;
   const realUrl = Buffer.from(urlB64, 'base64').toString('utf8');
@@ -375,9 +390,9 @@ async function handleStream(req, res) {
 
     const streams = results.map(r => {
       if (r.m3u8) {
-        // Goodstream — proxy directo
-        const encoded  = Buffer.from(r.m3u8).toString('base64');
-        const proxyUrl = `${HOST}/proxy/master?url=${encoded}&type=${type}&id=${id}`;
+        // Goodstream — resolver m3u8 fresco en cada request via embedUrl
+        const encoded  = Buffer.from(r.embedUrl).toString('base64');
+        const proxyUrl = `${HOST}/proxy/goodstream?embed=${encoded}&type=${type}&id=${id}`;
         return {
           name : `Vimeus · ${r.quality || 'HD'} · ${r.lang || ''}`.trim(),
           title: '▶ Goodstream',
