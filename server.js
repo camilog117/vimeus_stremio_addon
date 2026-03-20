@@ -413,18 +413,6 @@ async function handleStream(req, res) {
       }
     });
 
-    // Pre-calentar m3u8 de goodstream en background
-    results.forEach(r => {
-      if (r.embedUrl) {
-        const cacheKey = `m3u8:${r.embedUrl}`;
-        if (!m3u8CacheGet(cacheKey)) {
-          extractFromGoodstream(r.embedUrl)
-            .then(m3u8 => { if (m3u8) m3u8CacheSet(cacheKey, m3u8); })
-            .catch(() => {});
-        }
-      }
-    });
-
     return res.json({ streams });
   } catch (err) {
     console.error(`  → Error: ${err.message}`);
