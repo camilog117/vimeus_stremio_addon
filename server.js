@@ -99,21 +99,21 @@ async function extractFromVimeos(embedUrl) {
   let browser;
   try {
     browser = await puppeteer.connect({
-      browserWSEndpoint: `wss://production-sfo.browserless.io?token=${BROWSERLESS_KEY}`,
+      browserWSEndpoint: `wss://production-sfo.browserless.io?token=${BROWSERLESS_KEY}&stealth=true&blockAds=true`,
     });
 
     const page = await browser.newPage();
     let m3u8   = null;
 
-    // Interceptar requests para capturar el m3u8
-    await page.setRequestInterception(true);
-    page.on('request', req => {
-      const url = req.url();
-      if (!m3u8 && url.includes('.m3u8')) {
-        m3u8 = url;
-        console.log(`  [vimeos/browserless] ✅ ${url.slice(0, 80)}...`);
+    // Usar CDP para capturar requests de todos los frames incluyendo iframes
+    const client = await page.createCDPSession();
+    await client.send('Network.enable');
+
+    client.on('Network.requestWillBeSent', ({ request }) => {
+      if (!m3u8 && request.url.includes('.m3u8')) {
+        m3u8 = request.url;
+        console.log(`  [vimeos/browserless] ✅ ${request.url.slice(0, 80)}...`);
       }
-      req.continue();
     });
 
     await page.setExtraHTTPHeaders({
@@ -123,8 +123,8 @@ async function extractFromVimeos(embedUrl) {
 
     await page.goto(embedUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
 
-    // Esperar hasta 15s al m3u8
-    const deadline = Date.now() + 15000;
+    // Esperar hasta 20s al m3u8
+    const deadline = Date.now() + 20000;
     while (!m3u8 && Date.now() < deadline) {
       await new Promise(r => setTimeout(r, 500));
     }
