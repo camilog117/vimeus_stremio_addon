@@ -411,14 +411,37 @@ async function handleStream(req, res) {
 
     const streams = results.map(r => {
       if (r.m3u8) {
-        // Goodstream — resolver m3u8 fresco en cada request via embedUrl
-        const encoded  = Buffer.from(r.embedUrl).toString('base64');
-        const proxyUrl = `${HOST}/proxy/goodstream?embed=${encoded}&type=${type}&id=${id}`;
-        return {
-          name : `Vimeus · ${r.quality || 'HD'} · ${r.lang || ''}`.trim(),
-          title: '▶ Goodstream',
-          url  : proxyUrl,
-        };
+        // Intentar devolver m3u8 directo — más rápido para TV
+        // El m3u8 pre-calentado está en cache
+        const cacheKey = `m3u8:${r.embedUrl}`;
+        const cachedM3u8 = m3u8CacheGet(cacheKey);
+        
+        if (cachedM3u8) {
+          // Token fresco disponible — devolver directo
+          return {
+            name : `Vimeus · ${r.quality || 'HD'} · ${r.lang || ''}`.trim(),
+            title: '▶ Goodstream',
+            url  : cachedM3u8,
+            behaviorHints: {
+              notWebReady: false,
+              proxyHeaders: {
+                request: {
+                  referer: 'https://goodstream.one/',
+                  origin : 'https://goodstream.one',
+                }
+              }
+            }
+          };
+        } else {
+          // Sin cache — usar proxy
+          const encoded  = Buffer.from(r.embedUrl).toString('base64');
+          const proxyUrl = `${HOST}/proxy/goodstream?embed=${encoded}&type=${type}&id=${id}`;
+          return {
+            name : `Vimeus · ${r.quality || 'HD'} · ${r.lang || ''}`.trim(),
+            title: '▶ Goodstream',
+            url  : proxyUrl,
+          };
+        }
       } else if (r.vimeosEmbed) {
         // Vimeos — proxy via Browserless (se resuelve al elegir)
         const encoded  = Buffer.from(r.vimeosEmbed).toString('base64');
