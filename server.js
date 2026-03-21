@@ -292,12 +292,7 @@ app.get('/proxy/goodstream', async (req, res) => {
     res.send(content);
   };
 
-  let m3u8 = m3u8Get(cacheKey);
-  if (m3u8) {
-    console.log(`  [proxy/goodstream] Token en cache`);
-    try { return await serveM3U8(m3u8); } catch (_) { m3u8Cache.delete(cacheKey); }
-  }
-
+  // Siempre token fresco — expira muy rápido en goodstream
   console.log(`  [proxy/goodstream] Obteniendo token fresco`);
   try {
     m3u8 = await extractFromGoodstream(embedUrl);
@@ -431,17 +426,15 @@ async function handleStream(req, res) {
         };
       } else if (r.vimeosEmbed) {
         return {
-          name : `Vimeus · ${r.quality || 'HD'} · ${r.lang || ''}`.trim(),
-          title: '🌐 Vimeos (HD)',
-          url  : r.vimeosEmbed,
-          behaviorHints: { notWebReady: true },
+          name       : `Vimeus · ${r.quality || 'HD'} · ${r.lang || ''}`.trim(),
+          title      : '🌐 Vimeos (HD)',
+          externalUrl: r.vimeosEmbed,
         };
       } else {
         return {
-          name : `Vimeus · ${r.quality || 'HD'} · ${r.lang || ''}`.trim(),
-          title: `🌐 ${r.source}`,
-          url  : r.externalUrl,
-          behaviorHints: { notWebReady: true },
+          name       : `Vimeus · ${r.quality || 'HD'} · ${r.lang || ''}`.trim(),
+          title      : `🌐 ${r.source}`,
+          externalUrl: r.externalUrl,
         };
       }
     });
