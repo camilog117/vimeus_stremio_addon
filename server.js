@@ -67,8 +67,7 @@ async function imdbToTmdb(imdbId, type) {
 // ─────────────────────────────────────────────
 //  VIMEUS — obtener embeds
 // ─────────────────────────────────────────────
-async function getEmbeds(embedUrl) {
-  console.log(`  [vimeus] ${embedUrl}`);
+async function fetchEmbed(embedUrl) {
   const { data: html } = await axios.get(embedUrl, {
     headers: { ...HEADERS, 'Referer': 'https://vimeus.com/', 'Origin': 'https://vimeus.com' },
     timeout: 30000,
@@ -76,14 +75,38 @@ async function getEmbeds(embedUrl) {
   const match = html.match(/<script[^>]+id="data"[^>]*>([\s\S]*?)<\/script>/);
   if (!match) throw new Error('No se encontró bloque de datos');
   const data = JSON.parse(match[1].trim());
+  if (data.seasons && (!data.embeds || !data.embeds.length)) return null;
+  return data.embeds || [];
+}
 
-  if (data.seasons && (!data.embeds || !data.embeds.length)) {
+async function getEmbeds(embedUrl) {
+  console.log(`  [vimeus] ${embedUrl}`);
+  try {
+    const embeds = await fetchEmbed(embedUrl);
+    if (embeds !== null) {
+      console.log(`  [vimeus] ${embeds.length} fuentes`);
+      return embeds;
+    }
+    // Sin embeds — anime sin episodio
     console.log(`  [vimeus] Anime sin episodio — necesita se+ep`);
     return [];
+  } catch (err) {
+    // 404 en /serie — intentar con /anime
+    if (err.response?.status === 404 && embedUrl.includes('/e/serie')) {
+      const animeUrl = embedUrl.replace('/e/serie', '/e/anime');
+      console.log(`  [vimeus] 404 en serie, reintentando como anime: ${animeUrl}`);
+      try {
+        const embeds = await fetchEmbed(animeUrl);
+        if (embeds !== null) {
+          console.log(`  [vimeus] ✅ ${embeds.length} fuentes (via anime)`);
+          return embeds;
+        }
+      } catch (e2) {
+        console.log(`  [vimeus] anime también falló: ${e2.message}`);
+      }
+    }
+    throw err;
   }
-
-  console.log(`  [vimeus] "${data.title}" — ${data.embeds?.length || 0} fuentes`);
-  return data.embeds || [];
 }
 
 // ─────────────────────────────────────────────
@@ -337,7 +360,7 @@ app.get('/manifest.json', (req, res) => {
     id          : 'org.vimeus.hls',
     name        : 'Vimeus',
     description : 'Stream HLS dinámico desde Vimeus',
-    version     : '9.3.0',
+    version     : '9.4.0',
     resources   : ['stream'],
     types       : ['movie', 'series', 'anime', 'anime.series', 'anime.movie'],
     catalogs    : [],
