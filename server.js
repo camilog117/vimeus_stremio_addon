@@ -337,11 +337,11 @@ app.get('/manifest.json', (req, res) => {
     id          : 'org.vimeus.hls',
     name        : 'Vimeus',
     description : 'Stream HLS dinámico desde Vimeus',
-    version     : '9.2.0',
+    version     : '9.3.0',
     resources   : ['stream'],
-    types       : ['movie', 'series', 'anime'],
+    types       : ['movie', 'series', 'anime', 'anime.series', 'anime.movie'],
     catalogs    : [],
-    idPrefixes  : ['tt', 'tmdb:'],
+    idPrefixes  : ['tt', 'tmdb:', 'kitsu:', 'mal:', 'tvdb:'],
     behaviorHints: { configurable: false },
   });
 });
@@ -350,8 +350,10 @@ app.get('/stream/:type/:id.json', handleStream);
 app.get('/stream/:type/:id',      handleStream);
 
 async function handleStream(req, res) {
-  const { type, id } = req.params;
-  console.log(`\n▶ [${type}] ${id}`);
+  const rawType = req.params.type;
+  const id      = req.params.id;
+  const type    = (rawType === 'anime.series' || rawType === 'anime.movie') ? 'anime' : rawType;
+  console.log(`\n▶ [${rawType}→${type}] ${id}`);
   try {
     const results = await getStream(type, id);
     if (!results) return res.json({ streams: [] });
@@ -395,7 +397,9 @@ async function handleStream(req, res) {
 }
 
 app.get('/debug/:type/:id', async (req, res) => {
-  const { type, id } = req.params;
+  const rawType = req.params.type;
+  const id      = req.params.id;
+  const type    = (rawType === 'anime.series' || rawType === 'anime.movie') ? 'anime' : rawType;
   console.log(`\n[DEBUG] ${type}/${id}`);
   try {
     const results = await getStream(type, id);
