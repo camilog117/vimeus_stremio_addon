@@ -95,6 +95,7 @@ async function malToTmdb(malId) {
 
 async function kitsuToTmdb(kitsuId) {
   const key = `kitsu:${kitsuId}`;
+  idCache.delete('imdb:series:' + kitsuId); // limpiar posible contaminación
   if (idCache.has(key)) return idCache.get(key);
   try {
     const kitsuRes = await axios.get(
@@ -139,8 +140,10 @@ async function resolveId(type, id) {
   const parts  = id.split(':');
   const prefix = parts[0];
 
-  // Determinar el tipo base para vimeus (anime para tipos de anime)
-  const baseType = (type === 'anime' || type === 'anime.series' || type === 'anime.movie') ? 'anime' : type;
+  // Determinar el tipo base para vimeus
+  // Si el ID tiene prefijo de anime (kitsu, mal, anilist, anidb), forzar anime
+  const animePrefix = ['kitsu', 'mal', 'anilist', 'anidb'].includes(prefix);
+  const baseType = animePrefix || type === 'anime' || type === 'anime.series' || type === 'anime.movie' ? 'anime' : type;
 
   let tmdbId, season, episode;
 
