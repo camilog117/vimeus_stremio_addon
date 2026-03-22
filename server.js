@@ -44,11 +44,10 @@ function cacheGet(key) {
 function cacheSet(key, data) { cache.set(key, { data, ts: Date.now() }); }
 
 // ─────────────────────────────────────────────
-//  CONVERSIÓN DE IDs A TMDB
+//  CONVERSIÓN DE IDs
 // ─────────────────────────────────────────────
 const idCache = new Map();
 
-// IMDb → TMDB
 async function imdbToTmdb(imdbId, type) {
   const key = `imdb:${type}:${imdbId}`;
   if (idCache.has(key)) return idCache.get(key);
@@ -59,73 +58,26 @@ async function imdbToTmdb(imdbId, type) {
     );
     const result = type === 'movie' ? data.movie_results?.[0] : data.tv_results?.[0];
     const tmdbId = result?.id?.toString() || null;
-    if (tmdbId) { idCache.set(key, tmdbId); console.log(`  [tmdb] ${imdbId} → ${tmdbId}`); }
+    if (tmdbId) { idCache.set(key, tmdbId); console.log(`  [imdb→tmdb] ${imdbId} → ${tmdbId}`); }
     return tmdbId;
-  } catch (err) {
-    console.log(`  [tmdb] Error: ${err.message}`);
-    return null;
-  }
+  } catch (err) { console.log(`  [imdb] Error: ${err.message}`); return null; }
 }
 
-// Kitsu → TMDB (via API de Kitsu para obtener el título, luego buscar en TMDB)
-async function kitsuToTmdb(kitsuId) {
-  const key = `kitsu:${kitsuId}`;
+async function tvdbToTmdb(tvdbId, type) {
+  const key = `tvdb:${tvdbId}`;
   if (idCache.has(key)) return idCache.get(key);
   try {
-    // Obtener info del anime desde Kitsu
-    const kitsuRes = await axios.get(
-      `https://kitsu.io/api/edge/anime/${kitsuId}`,
-      { timeout: 10000, headers: { 'Accept': 'application/vnd.api+json' } }
-    );
-    const attrs = kitsuRes.data?.data?.attributes;
-    if (!attrs) return null;
-
-    // Intentar con el ID de TVDB que Kitsu a veces expone
-    const mappingsRes = await axios.get(
-      `https://kitsu.io/api/edge/anime/${kitsuId}/mappings`,
-      { timeout: 10000, headers: { 'Accept': 'application/vnd.api+json' } }
-    ).catch(() => null);
-
-    if (mappingsRes) {
-      const mappings = mappingsRes.data?.data || [];
-      const tmdbMapping = mappings.find(m => m.attributes?.externalSite === 'thetvdb');
-      if (tmdbMapping) {
-        const tvdbId = tmdbMapping.attributes.externalId;
-        const tmdbRes = await axios.get(
-          `https://api.themoviedb.org/3/find/${tvdbId}?api_key=${TMDB_KEY}&external_source=tvdb_id`,
-          { timeout: 10000 }
-        );
-        const result = tmdbRes.data?.tv_results?.[0];
-        if (result) {
-          const tmdbId = result.id.toString();
-          idCache.set(key, tmdbId);
-          console.log(`  [kitsu→tvdb→tmdb] ${kitsuId} → ${tmdbId}`);
-          return tmdbId;
-        }
-      }
-    }
-
-    // Fallback: buscar por título en TMDB
-    const title = attrs.canonicalTitle || attrs.titles?.en;
-    if (!title) return null;
-    console.log(`  [kitsu] Buscando por título: ${title}`);
-    const searchRes = await axios.get(
-      `https://api.themoviedb.org/3/search/tv?api_key=${TMDB_KEY}&query=${encodeURIComponent(title)}`,
+    const { data } = await axios.get(
+      `https://api.themoviedb.org/3/find/${tvdbId}?api_key=${TMDB_KEY}&external_source=tvdb_id`,
       { timeout: 10000 }
     );
-    const tmdbId = searchRes.data?.results?.[0]?.id?.toString() || null;
-    if (tmdbId) {
-      idCache.set(key, tmdbId);
-      console.log(`  [kitsu→tmdb] ${kitsuId} → ${tmdbId} (${title})`);
-    }
+    const result = type === 'movie' ? data.movie_results?.[0] : data.tv_results?.[0];
+    const tmdbId = result?.id?.toString() || null;
+    if (tmdbId) { idCache.set(key, tmdbId); console.log(`  [tvdb→tmdb] ${tvdbId} → ${tmdbId}`); }
     return tmdbId;
-  } catch (err) {
-    console.log(`  [kitsu] Error: ${err.message}`);
-    return null;
-  }
+  } catch (err) { console.log(`  [tvdb] Error: ${err.message}`); return null; }
 }
 
-// MAL → TMDB (via TMDB external IDs)
 async function malToTmdb(malId) {
   const key = `mal:${malId}`;
   if (idCache.has(key)) return idCache.get(key);
@@ -138,44 +90,81 @@ async function malToTmdb(malId) {
     const tmdbId = result?.id?.toString() || null;
     if (tmdbId) { idCache.set(key, tmdbId); console.log(`  [mal→tmdb] ${malId} → ${tmdbId}`); }
     return tmdbId;
-  } catch (err) {
-    // TMDB no siempre tiene MAL IDs, fallback a Kitsu
-    console.log(`  [mal] Error: ${err.message}`);
-    return null;
-  }
+  } catch (err) { console.log(`  [mal] Error: ${err.message}`); return null; }
 }
 
-// TVDB → TMDB
-async function tvdbToTmdb(tvdbId, type) {
-  const key = `tvdb:${tvdbId}`;
+async function kitsuToTmdb(kitsuId) {
+  const key = `kitsu:${kitsuId}`;
   if (idCache.has(key)) return idCache.get(key);
   try {
-    const source = type === 'movie' ? 'tvdb_id' : 'tvdb_id';
-    const { data } = await axios.get(
-      `https://api.themoviedb.org/3/find/${tvdbId}?api_key=${TMDB_KEY}&external_source=${source}`,
+    const kitsuRes = await axios.get(
+      `https://kitsu.io/api/edge/anime/${kitsuId}`,
+      { timeout: 10000, headers: { 'Accept': 'application/vnd.api+json' } }
+    );
+    const attrs = kitsuRes.data?.data?.attributes;
+    if (!attrs) return null;
+
+    // Intentar via mappings TVDB
+    const mappingsRes = await axios.get(
+      `https://kitsu.io/api/edge/anime/${kitsuId}/mappings`,
+      { timeout: 10000, headers: { 'Accept': 'application/vnd.api+json' } }
+    ).catch(() => null);
+
+    if (mappingsRes) {
+      const mappings = mappingsRes.data?.data || [];
+      const tvdbMapping = mappings.find(m => m.attributes?.externalSite === 'thetvdb');
+      if (tvdbMapping) {
+        const tmdbId = await tvdbToTmdb(tvdbMapping.attributes.externalId, 'series');
+        if (tmdbId) { idCache.set(key, tmdbId); return tmdbId; }
+      }
+    }
+
+    // Fallback: buscar por título
+    const title = attrs.canonicalTitle || attrs.titles?.en;
+    if (!title) return null;
+    const searchRes = await axios.get(
+      `https://api.themoviedb.org/3/search/tv?api_key=${TMDB_KEY}&query=${encodeURIComponent(title)}`,
       { timeout: 10000 }
     );
-    const result = type === 'movie' ? data.movie_results?.[0] : (data.tv_results?.[0] || data.tv_episode_results?.[0]?.show);
-    const tmdbId = result?.id?.toString() || null;
-    if (tmdbId) { idCache.set(key, tmdbId); console.log(`  [tvdb→tmdb] ${tvdbId} → ${tmdbId}`); }
+    const tmdbId = searchRes.data?.results?.[0]?.id?.toString() || null;
+    if (tmdbId) { idCache.set(key, tmdbId); console.log(`  [kitsu→tmdb] ${kitsuId} → ${tmdbId}`); }
     return tmdbId;
-  } catch (err) {
-    console.log(`  [tvdb] Error: ${err.message}`);
-    return null;
-  }
+  } catch (err) { console.log(`  [kitsu] Error: ${err.message}`); return null; }
 }
 
-// Función principal de conversión de cualquier ID a TMDB
-async function resolveToTmdb(prefix, id, type) {
-  switch(prefix) {
-    case 'tt':      return await imdbToTmdb(prefix + id, type);
-    case 'kitsu':   return await kitsuToTmdb(id);
-    case 'mal':     return await malToTmdb(id);
-    case 'tvdb':    return await tvdbToTmdb(id, type);
-    case 'anilist': return null;
-    case 'anidb':   return null;
-    default:        return null;
+// ─────────────────────────────────────────────
+//  RESOLVER ID → TMDB
+// ─────────────────────────────────────────────
+async function resolveId(type, id) {
+  const parts  = id.split(':');
+  const prefix = parts[0];
+
+  // Determinar el tipo base para vimeus (anime para tipos de anime)
+  const baseType = (type === 'anime' || type === 'anime.series' || type === 'anime.movie') ? 'anime' : type;
+
+  let tmdbId, season, episode;
+
+  if (prefix === 'tmdb') {
+    tmdbId = parts[1]; season = parts[2] || null; episode = parts[3] || null;
+  } else if (prefix === 'kitsu') {
+    tmdbId = await kitsuToTmdb(parts[1]);
+    season = parts[2] || null; episode = parts[3] || null;
+  } else if (prefix === 'mal') {
+    tmdbId = await malToTmdb(parts[1]);
+    season = parts[2] || null; episode = parts[3] || null;
+  } else if (prefix === 'tvdb') {
+    tmdbId = await tvdbToTmdb(parts[1], baseType === 'movie' ? 'movie' : 'series');
+    season = parts[2] || null; episode = parts[3] || null;
+  } else if (prefix.startsWith('tt')) {
+    tmdbId = await imdbToTmdb(parts[0], baseType === 'movie' ? 'movie' : 'series');
+    season = parts[1] || null; episode = parts[2] || null;
+  } else {
+    // ID numérico directo (tmdb sin prefijo)
+    tmdbId = parts[0]; season = parts[1] || null; episode = parts[2] || null;
   }
+
+  if (!tmdbId) return null;
+  return { tmdbId, season, episode, baseType };
 }
 
 // ─────────────────────────────────────────────
@@ -192,7 +181,7 @@ async function getEmbeds(embedUrl) {
   const data = JSON.parse(match[1].trim());
 
   if (data.seasons && (!data.embeds || !data.embeds.length)) {
-    console.log(`  [vimeus] Anime sin episodio — se necesita se+ep en la URL`);
+    console.log(`  [vimeus] Anime sin episodio — necesita se+ep`);
     return [];
   }
 
@@ -234,9 +223,7 @@ async function extractFromVimeos(embedUrl) {
     await page.setExtraHTTPHeaders({ 'Referer': 'https://vimeus.com/', 'Origin': 'https://vimeus.com' });
     await page.goto(embedUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
     const deadline = Date.now() + 20000;
-    while (!m3u8 && Date.now() < deadline) {
-      await new Promise(r => setTimeout(r, 500));
-    }
+    while (!m3u8 && Date.now() < deadline) await new Promise(r => setTimeout(r, 500));
     await page.close();
     return m3u8;
   } catch (err) {
@@ -272,9 +259,7 @@ async function getM3U8FromEmbeds(embeds) {
       } else {
         return { externalUrl: embed.url, lang: embed.lang, quality: embed.quality, source: hostname };
       }
-    } catch (err) {
-      console.log(`  [warn] ${err.message}`);
-    }
+    } catch (err) { console.log(`  [warn] ${err.message}`); }
     return null;
   });
 
@@ -284,75 +269,35 @@ async function getM3U8FromEmbeds(embeds) {
 // ─────────────────────────────────────────────
 //  BUILD EMBED URL
 // ─────────────────────────────────────────────
-function buildEmbedUrl(type, id) {
-  const parts = id.split(':');
-  let baseId, season, episode;
-  if (parts[0] === 'tmdb') {
-    baseId = parts[1]; season = parts[2] || null; episode = parts[3] || null;
-  } else {
-    baseId = parts[0]; season = parts[1] || null; episode = parts[2] || null;
-  }
-  const param = baseId.startsWith('tt') ? `imdb=${baseId}` : `tmdb=${baseId}`;
-
-  if (type === 'movie') return `${BASE}/e/movie?${param}&view_key=${VIEW_KEY}`;
-  if (type === 'series') {
-    let url = `${BASE}/e/serie?${param}&view_key=${VIEW_KEY}`;
-    if (season && episode) url += `&se=${season}&ep=${episode}`;
-    return url;
-  }
-  if (type === 'anime') {
+function buildEmbedUrl(baseType, tmdbId, season, episode) {
+  const param = `tmdb=${tmdbId}`;
+  if (baseType === 'movie') return `${BASE}/e/movie?${param}&view_key=${VIEW_KEY}`;
+  if (baseType === 'anime') {
     let url = `${BASE}/e/anime?${param}&view_key=${VIEW_KEY}`;
     if (season && episode) url += `&se=${season}&ep=${episode}`;
     return url;
   }
-  return null;
+  // series
+  let url = `${BASE}/e/serie?${param}&view_key=${VIEW_KEY}`;
+  if (season && episode) url += `&se=${season}&ep=${episode}`;
+  return url;
 }
 
 // ─────────────────────────────────────────────
-//  GET STREAM — resuelve cualquier ID a TMDB
+//  GET STREAM
 // ─────────────────────────────────────────────
 async function getStream(type, id) {
   const cacheKey = `${type}:${id}`;
   const cached   = cacheGet(cacheKey);
   if (cached) { console.log(`  [CACHE] ${cacheKey}`); return cached; }
 
-  const parts  = id.split(':');
-  const prefix = parts[0];
-  let tmdbId   = null;
-  let season   = null;
-  let episode  = null;
+  const resolved = await resolveId(type, id);
+  if (!resolved) { console.log(`  → No se pudo resolver el ID: ${id}`); return null; }
 
-  if (prefix === 'tmdb') {
-    // tmdb:12345 o tmdb:12345:1:1
-    tmdbId  = parts[1];
-    season  = parts[2] || null;
-    episode = parts[3] || null;
-  } else if (['kitsu', 'mal', 'anilist', 'anidb', 'tvdb'].includes(prefix)) {
-    // kitsu:12345:1:1
-    const rawId = parts[1];
-    season      = parts[2] || null;
-    episode     = parts[3] || null;
-    tmdbId      = await resolveToTmdb(prefix, rawId, type);
-    if (!tmdbId) { console.log(`  → No TMDB ID para ${prefix}:${rawId}`); return null; }
-  } else if (parts[0].startsWith('tt')) {
-    // tt1234567 o tt1234567:1:1
-    tmdbId  = await imdbToTmdb(parts[0], type);
-    season  = parts[1] || null;
-    episode = parts[2] || null;
-    if (!tmdbId) { console.log(`  → No TMDB ID para ${parts[0]}`); return null; }
-  } else {
-    // ID numérico directo: 12345 o 12345:1:1
-    tmdbId  = parts[0];
-    season  = parts[1] || null;
-    episode = parts[2] || null;
-  }
+  const { tmdbId, season, episode, baseType } = resolved;
+  console.log(`  → TMDB: ${tmdbId} | Tipo: ${baseType} | S${season}E${episode}`);
 
-  // Construir ID final con tmdb
-  const finalId = season && episode
-    ? `${tmdbId}:${season}:${episode}`
-    : tmdbId;
-
-  const embedUrl = buildEmbedUrl(type, finalId);
+  const embedUrl = buildEmbedUrl(baseType, tmdbId, season, episode);
   if (!embedUrl) return null;
 
   const embeds = await getEmbeds(embedUrl);
@@ -383,7 +328,7 @@ app.get('/proxy/goodstream', async (req, res) => {
     res.send(content);
   };
 
-  console.log(`  [proxy/goodstream] Token fresco para: ${embedUrl}`);
+  console.log(`  [proxy/goodstream] Token fresco`);
   try {
     const m3u8 = await extractFromGoodstream(embedUrl);
     if (!m3u8) return res.status(404).send('No se encontró m3u8');
@@ -397,21 +342,17 @@ app.get('/proxy/goodstream', async (req, res) => {
 app.get('/proxy/vimeos', async (req, res) => {
   const { url: urlB64 } = req.query;
   const embedUrl = Buffer.from(urlB64, 'base64').toString('utf8');
-  console.log(`  [proxy/vimeos] ${embedUrl}`);
   try {
     const m3u8 = await extractFromVimeos(embedUrl);
     if (!m3u8) return res.status(404).send('No se encontró m3u8');
-    const encoded = Buffer.from(m3u8).toString('base64');
-    res.redirect(`/proxy/master?url=${encoded}`);
+    res.redirect(`/proxy/master?url=${Buffer.from(m3u8).toString('base64')}`);
   } catch (err) {
-    console.error(`  [proxy/vimeos] Error: ${err.message}`);
     res.status(500).send('Error');
   }
 });
 
 app.get('/proxy/master', async (req, res) => {
   const realUrl = Buffer.from(req.query.url, 'base64').toString('utf8');
-  console.log(`  [proxy/master] ${realUrl.slice(0, 80)}...`);
   try {
     const r    = await axios.get(realUrl, { headers: getHeaders(realUrl), timeout: 30000 });
     let content = r.data;
@@ -424,7 +365,6 @@ app.get('/proxy/master', async (req, res) => {
     res.set('Access-Control-Allow-Origin', '*');
     res.send(content);
   } catch (err) {
-    console.error(`  [proxy/master] Error: ${err.message}`);
     res.status(500).send('Error fetching master');
   }
 });
@@ -484,7 +424,7 @@ app.get('/manifest.json', (req, res) => {
     id          : 'org.vimeus.hls',
     name        : 'Vimeus',
     description : 'Stream HLS dinámico desde Vimeus',
-    version     : '10.0.0',
+    version     : '11.0.0',
     resources   : ['stream'],
     types       : ['movie', 'series', 'anime', 'anime.series', 'anime.movie'],
     catalogs    : [],
@@ -497,9 +437,13 @@ app.get('/stream/:type/:id.json', handleStream);
 app.get('/stream/:type/:id',      handleStream);
 
 async function handleStream(req, res) {
-  let { type, id } = req.params;
-  if (type === 'anime.series' || type === 'anime.movie') type = 'anime';
-  console.log(`\n▶ [${type}] ${id}`);
+  const rawType = req.params.type;
+  const id      = req.params.id;
+
+  // Normalizar tipo — anime.series y anime.movie → anime
+  const type = rawType === 'anime.series' || rawType === 'anime.movie' ? 'anime' : rawType;
+  console.log(`\n▶ [${rawType}→${type}] ${id}`);
+
   try {
     const results = await getStream(type, id);
     if (!results) return res.json({ streams: [] });
@@ -507,15 +451,12 @@ async function handleStream(req, res) {
     const streams = [];
     for (const r of results) {
       if (r.embedUrl) {
-        // Goodstream: stream interno para Stremio
-        const encoded  = Buffer.from(r.embedUrl).toString('base64');
-        const proxyUrl = `${HOST}/proxy/goodstream?embed=${encoded}`;
+        const encoded = Buffer.from(r.embedUrl).toString('base64');
         streams.push({
           name : `Vimeus · ${r.quality || 'HD'} · ${r.lang || ''}`.trim(),
           title: '▶ Goodstream',
-          url  : proxyUrl,
+          url  : `${HOST}/proxy/goodstream?embed=${encoded}`,
         });
-        // También como enlace externo para Web Video Caster
         streams.push({
           name       : `Vimeus · ${r.quality || 'HD'} · ${r.lang || ''} · Externo`.trim(),
           title      : '🌐 Goodstream (externo)',
@@ -544,7 +485,9 @@ async function handleStream(req, res) {
 }
 
 app.get('/debug/:type/:id', async (req, res) => {
-  const { type, id } = req.params;
+  const rawType = req.params.type;
+  const id      = req.params.id;
+  const type    = rawType === 'anime.series' || rawType === 'anime.movie' ? 'anime' : rawType;
   console.log(`\n[DEBUG] ${type}/${id}`);
   try {
     const results = await getStream(type, id);
@@ -572,8 +515,8 @@ setInterval(() => {
 //  START
 // ─────────────────────────────────────────────
 app.listen(PORT, () => {
-  console.log(`\n✅ Addon Vimeus v10.0 corriendo en http://localhost:${PORT}`);
+  console.log(`\n✅ Addon Vimeus v11.0 corriendo en http://localhost:${PORT}`);
   console.log(`   Manifest → http://localhost:${PORT}/manifest.json`);
   console.log(`   Debug    → http://localhost:${PORT}/debug/movie/tt2395427`);
-  console.log(`   Anime    → http://localhost:${PORT}/debug/anime/kitsu:12:1:1\n`);
+  console.log(`   Anime    → http://localhost:${PORT}/debug/anime/mal:5114:1:1\n`);
 });
