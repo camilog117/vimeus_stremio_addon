@@ -65,6 +65,75 @@ async function imdbToTmdb(imdbId, type) {
 }
 
 // ─────────────────────────────────────────────
+//  MAL → TMDB via Jikan API (sin API key)
+// ─────────────────────────────────────────────
+const malCache = new Map();
+
+async function malToTmdb(malId) {
+  if (malCache.has(malId)) return malCache.get(malId);
+  try {
+    // Obtener info del anime desde Jikan (wrapper MAL)
+    const jikanRes = await axios.get(
+      `https://api.jikan.moe/v4/anime/${malId}`,
+      { timeout: 10000 }
+    );
+    const anime = jikanRes.data?.data;
+    if (!anime) return null;
+
+    const title = anime.title_english || anime.title;
+    console.log(`  [mal→jikan] ID ${malId}: ${title}`);
+
+    // Buscar en TMDB por título
+    const tmdbRes = await axios.get(
+      `https://api.themoviedb.org/3/search/tv?api_key=${TMDB_KEY}&query=${encodeURIComponent(title)}`,
+      { timeout: 10000 }
+    );
+    const result = tmdbRes.data?.results?.[0];
+    const tmdbId = result?.id?.toString() || null;
+
+    if (tmdbId) {
+      malCache.set(malId, tmdbId);
+      console.log(`  [mal→tmdb] ${malId} → ${tmdbId} (${title})`);
+    } else {
+      console.log(`  [mal] No se encontró TMDB para: ${title}`);
+    }
+    return tmdbId;
+  } catch (err) {
+    console.log(`  [mal] Error: ${err.message}`);
+    return null;
+  }
+}
+
+// ─────────────────────────────────────────────
+//  KITSU → TMDB via Kitsu API
+// ─────────────────────────────────────────────
+const kitsuCache = new Map();
+
+async function kitsuToTmdb(kitsuId) {
+  if (kitsuCache.has(kitsuId)) return kitsuCache.get(kitsuId);
+  try {
+    const r = await axios.get(
+      `https://kitsu.io/api/edge/anime/${kitsuId}`,
+      { timeout: 10000, headers: { 'Accept': 'application/vnd.api+json' } }
+    );
+    const attrs = r.data?.data?.attributes;
+    if (!attrs) return null;
+    const title = attrs.canonicalTitle || attrs.titles?.en || attrs.titles?.en_jp;
+    console.log(`  [kitsu→jikan] ID ${kitsuId}: ${title}`);
+    const tmdbRes = await axios.get(
+      `https://api.themoviedb.org/3/search/tv?api_key=${TMDB_KEY}&query=${encodeURIComponent(title)}`,
+      { timeout: 10000 }
+    );
+    const tmdbId = tmdbRes.data?.results?.[0]?.id?.toString() || null;
+    if (tmdbId) { kitsuCache.set(kitsuId, tmdbId); console.log(`  [kitsu→tmdb] ${kitsuId} → ${tmdbId}`); }
+    return tmdbId;
+  } catch (err) {
+    console.log(`  [kitsu] Error: ${err.message}`);
+    return null;
+  }
+}
+
+// ─────────────────────────────────────────────
 //  VIMEUS — obtener embeds
 // ─────────────────────────────────────────────
 async function fetchEmbed(embedUrl) {
@@ -221,16 +290,35 @@ async function getStream(type, id) {
   const cached   = cacheGet(cacheKey);
   if (cached) { console.log(`  [CACHE] ${cacheKey}`); return cached; }
 
-  // Convertir IMDb a TMDB si necesario
+  // Resolver ID según prefijo
   const parts  = id.split(':');
-  const baseId = parts[0] === 'tmdb' ? parts[1] : parts[0];
-  if (baseId.startsWith('tt')) {
-    const tmdbId = await imdbToTmdb(baseId, type);
-    if (!tmdbId) { console.log(`  → No TMDB ID para ${baseId}`); return null; }
-    const newId = parts[0] === 'tmdb'
-      ? ['tmdb', tmdbId, ...parts.slice(2)].join(':')
-      : [tmdbId, ...parts.slice(1)].join(':');
-    id = newId;
+  const prefix = parts[0];
+
+  if (prefix === 'mal' || prefix === 'anilist' || prefix === 'anidb') {
+    const animeId = parts[1];
+    const season  = parts[2] || null;
+    const ep      = parts[3] || null;
+    const tmdbId  = await malToTmdb(animeId);
+    if (!tmdbId) { console.log(`  → No TMDB ID para ${prefix}:${animeId}`); return null; }
+    id = season && ep ? `${tmdbId}:${season}:${ep}` : tmdbId;
+  } else if (prefix === 'kitsu') {
+    const kitsuId = parts[1];
+    const season  = parts[2] || null;
+    const ep      = parts[3] || null;
+    const tmdbId  = await kitsuToTmdb(kitsuId);
+    if (!tmdbId) { console.log(`  → No TMDB ID para kitsu:${kitsuId}`); return null; }
+    id = season && ep ? `${tmdbId}:${season}:${ep}` : tmdbId;
+  } else {
+    // IMDb o TMDB normal
+    const baseId = prefix === 'tmdb' ? parts[1] : parts[0];
+    if (baseId.startsWith('tt')) {
+      const tmdbId = await imdbToTmdb(baseId, type);
+      if (!tmdbId) { console.log(`  → No TMDB ID para ${baseId}`); return null; }
+      const newId = prefix === 'tmdb'
+        ? ['tmdb', tmdbId, ...parts.slice(2)].join(':')
+        : [tmdbId, ...parts.slice(1)].join(':');
+      id = newId;
+    }
   }
 
   const embedUrl = buildEmbedUrl(type, id);
@@ -360,11 +448,11 @@ app.get('/manifest.json', (req, res) => {
     id          : 'org.vimeus.hls',
     name        : 'Vimeus',
     description : 'Stream HLS dinámico desde Vimeus',
-    version     : '9.4.0',
+    version     : '9.7.0',
     resources   : ['stream'],
     types       : ['movie', 'series', 'anime', 'anime.series', 'anime.movie'],
     catalogs    : [],
-    idPrefixes  : ['tt', 'tmdb:', 'kitsu:', 'mal:', 'tvdb:'],
+    idPrefixes  : ['tt', 'tmdb:', 'mal:', 'kitsu:', 'anilist:', 'anidb:', 'tvdb:'],
     behaviorHints: { configurable: false },
   });
 });
