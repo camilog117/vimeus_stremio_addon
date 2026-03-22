@@ -145,13 +145,34 @@ async function malToTmdb(malId) {
   }
 }
 
+// TVDB → TMDB
+async function tvdbToTmdb(tvdbId, type) {
+  const key = `tvdb:${tvdbId}`;
+  if (idCache.has(key)) return idCache.get(key);
+  try {
+    const source = type === 'movie' ? 'tvdb_id' : 'tvdb_id';
+    const { data } = await axios.get(
+      `https://api.themoviedb.org/3/find/${tvdbId}?api_key=${TMDB_KEY}&external_source=${source}`,
+      { timeout: 10000 }
+    );
+    const result = type === 'movie' ? data.movie_results?.[0] : (data.tv_results?.[0] || data.tv_episode_results?.[0]?.show);
+    const tmdbId = result?.id?.toString() || null;
+    if (tmdbId) { idCache.set(key, tmdbId); console.log(`  [tvdb→tmdb] ${tvdbId} → ${tmdbId}`); }
+    return tmdbId;
+  } catch (err) {
+    console.log(`  [tvdb] Error: ${err.message}`);
+    return null;
+  }
+}
+
 // Función principal de conversión de cualquier ID a TMDB
 async function resolveToTmdb(prefix, id, type) {
   switch(prefix) {
     case 'tt':      return await imdbToTmdb(prefix + id, type);
     case 'kitsu':   return await kitsuToTmdb(id);
     case 'mal':     return await malToTmdb(id);
-    case 'anilist': return null; // Sin soporte directo, se puede agregar después
+    case 'tvdb':    return await tvdbToTmdb(id, type);
+    case 'anilist': return null;
     case 'anidb':   return null;
     default:        return null;
   }
@@ -306,7 +327,7 @@ async function getStream(type, id) {
     tmdbId  = parts[1];
     season  = parts[2] || null;
     episode = parts[3] || null;
-  } else if (prefix === 'kitsu' || prefix === 'mal' || prefix === 'anilist' || prefix === 'anidb') {
+  } else if (['kitsu', 'mal', 'anilist', 'anidb', 'tvdb'].includes(prefix)) {
     // kitsu:12345:1:1
     const rawId = parts[1];
     season      = parts[2] || null;
@@ -465,9 +486,9 @@ app.get('/manifest.json', (req, res) => {
     description : 'Stream HLS dinámico desde Vimeus',
     version     : '10.0.0',
     resources   : ['stream'],
-    types       : ['movie', 'series', 'anime'],
+    types       : ['movie', 'series', 'anime', 'anime.series', 'anime.movie'],
     catalogs    : [],
-    idPrefixes  : ['tt', 'tmdb:', 'kitsu:', 'mal:', 'anilist:', 'anidb:'],
+    idPrefixes  : ['tt', 'tmdb:', 'kitsu:', 'mal:', 'anilist:', 'anidb:', 'tvdb:'],
     behaviorHints: { configurable: false },
   });
 });
@@ -476,7 +497,8 @@ app.get('/stream/:type/:id.json', handleStream);
 app.get('/stream/:type/:id',      handleStream);
 
 async function handleStream(req, res) {
-  const { type, id } = req.params;
+  let { type, id } = req.params;
+  if (type === 'anime.series' || type === 'anime.movie') type = 'anime';
   console.log(`\n▶ [${type}] ${id}`);
   try {
     const results = await getStream(type, id);
