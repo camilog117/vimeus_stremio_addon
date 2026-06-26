@@ -249,7 +249,7 @@ async function getM3U8FromEmbeds(embeds) {
         return { externalUrl: embed.url, lang: embed.lang, quality: embed.quality, source: hostname };
       }
     } catch (err) { console.log(`  [warn] ${err.message}`); }
-    return null;
+
   });
 
   return (await Promise.all(promises)).filter(Boolean);
