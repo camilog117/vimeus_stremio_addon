@@ -9,7 +9,7 @@ const app = express();
 // ─────────────────────────────────────────────
 const VIEW_KEY        = 'Q8d7fhJ1D5MR1yjlmdTUGINn2slht2x2OtMweKxqPP4';
 const BASE            = 'https://vimeus.com';
-const PORT            = process.env.PORT || 7001;
+const PORT            = process.env.PORT || 7860;
 const HOST            = process.env.HOST || `http://localhost:${PORT}`;
 const TMDB_KEY        = process.env.TMDB_KEY || 'c38f916ce25f02182165b028993509d4';
 const BROWSERLESS_KEY = process.env.BROWSERLESS_KEY || '2UBBQ73kcdGF6IV230e231c2508133ce41982112d9c6f001d';
